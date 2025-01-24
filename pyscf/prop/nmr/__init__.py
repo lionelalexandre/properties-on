@@ -19,10 +19,12 @@
 from pyscf.prop.nmr import rhf
 from pyscf.prop.nmr import uhf
 from pyscf.prop.nmr import dhf
+from pyscf.prop.nmr import rhf_dm
 
 RHF = rhf.NMR
 UHF = uhf.NMR
 DHF = dhf.NMR
+RHF_DM = rhf_dm.NMR
 
 try:
     from pyscf.prop.nmr import rks
