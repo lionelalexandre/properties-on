@@ -33,7 +33,7 @@ from pyscf.scf import _vhf
 from pyscf.scf import cphf
 from pyscf.scf import _response_functions  # noqa
 from pyscf.data import nist
-
+import numpy as np
 
 def dia(nmrobj, gauge_orig=None, shielding_nuc=None, dm0=None):
     '''Diamagnetic part of NMR shielding tensors.
@@ -76,24 +76,31 @@ def dia(nmrobj, gauge_orig=None, shielding_nuc=None, dm0=None):
     return numpy.array(msc_dia).reshape(-1, 3, 3)
 
 
-def para(nmrobj, mo10=None, mo_coeff=None, mo_occ=None, shielding_nuc=None):
+def para(nmrobj, mo10=None, dm10=None, mo_coeff=None, mo_occ=None, shielding_nuc=None):
     '''Paramagnetic part of NMR shielding tensors.
     '''
     if mo_coeff is None:      mo_coeff = nmrobj._scf.mo_coeff
     if mo_occ is None:        mo_occ = nmrobj._scf.mo_occ
     if shielding_nuc is None: shielding_nuc = nmrobj.shielding_nuc
-    if mo10 is None: mo10 = nmrobj.solve_mo1()[0]
+    if (mo10 is None) and (dm10 is None): mo10 = nmrobj.solve_mo1()[0]
+    if (mo10 is None) and (dm10 is True): dm10_oo, dm10_ov = 3, 3
+    if (mo10 is True): mo10 = nmrobj.solve_mo1()[0]
 
     mol = nmrobj.mol
     para_vir = numpy.empty((len(shielding_nuc),3,3))
     para_occ = numpy.empty((len(shielding_nuc),3,3))
     occidx = mo_occ > 0
     viridx = mo_occ == 0
-    orbo = mo_coeff[:,occidx]
-    orbv = mo_coeff[:,viridx]
-    # *2 for double occupancy
-    dm10_oo = numpy.asarray([reduce(numpy.dot, (orbo, x[occidx]*2, orbo.T.conj())) for x in mo10])
-    dm10_vo = numpy.asarray([reduce(numpy.dot, (orbv, x[viridx]*2, orbo.T.conj())) for x in mo10])
+    if not( (mo10 is None) and (dm10 is True) ):
+        orbo = mo_coeff[:,occidx]
+        orbv = mo_coeff[:,viridx]
+        # *2 for double occupancy
+        dm10_oo = numpy.asarray([reduce(numpy.dot, (orbo, x[occidx]*2, orbo.T.conj())) for x in mo10])
+        dm10_vo = numpy.asarray([reduce(numpy.dot, (orbv, x[viridx]*2, orbo.T.conj())) for x in mo10])
+        #print('#### dm10_oo')
+        #print(dm10_oo)
+        #print('#### dm10_ov')
+        #print(dm10_vo)
     for n, atm_id in enumerate(shielding_nuc):
         mol.set_rinv_origin(mol.atom_coord(atm_id))
         # H^{01} = 1/2(A01 dot p + p dot A01) => (a01p + c.c.)/2 ~ <a01p>
@@ -110,6 +117,7 @@ def make_h10(mol, dm0, gauge_orig=None, verbose=logger.WARN):
 
     Note the side effects of set_common_origin
     '''
+    print('### h10:')
     log = logger.new_logger(mol, verbose)
     if gauge_orig is None:
         # A10_i dot p + p dot A10_i consistents with <p^2 g>
@@ -120,6 +128,7 @@ def make_h10(mol, dm0, gauge_orig=None, verbose=logger.WARN):
     else:
         with mol.with_common_origin(gauge_orig):
             h1 = -.5 * mol.intor('int1e_cg_irxp', 3)
+    print(np.shape(h1))
     return h1
 
 def get_jk(mol, dm0):
@@ -146,30 +155,59 @@ def make_h10giao(mol, dm0):
 
 def make_s10(mol, gauge_orig=None):
     '''First order overlap matrix wrt external magnetic field.'''
+    ### Perturbed overlap matrix in the AO basis 3xMxM
+    print('### s1 (make_s10):')
     if gauge_orig is None:
         # Im[<g\mu |g\nu>]
         s1 = -mol.intor_asymmetric('int1e_igovlp', 3)
     else:
         nao = mol.nao_nr()
         s1 = numpy.zeros((3,nao,nao))
+        
+    print(np.shape(s1))
+    #print(s1)
     return s1
 get_ovlp = make_s10
 
 
 def _solve_mo1_uncoupled(mo_energy, mo_occ, h1, s1):
     '''uncoupled first order equation'''
+    print('### begin: _solve_mo1_uncoupled')
+    
     e_a = mo_energy[mo_occ==0]
     e_i = mo_energy[mo_occ>0]
+    ### e_ai: 2D 1/(e_a(i) - (e_i(j))) size (M-N)xN
     e_ai = 1 / (e_a.reshape(-1,1) - e_i)
+
+    print(np.shape(e_a))
+    print(np.shape(e_i))
+    print(np.shape(e_ai))
+    
+
+    print('### h1:')
+    print(np.shape(h1),type(h1))
+    #print((hs[0]==hs[0].T).all())
+    print('### s1:')
+    print(np.shape(s1),type(s1))
+    print(s1)
 
     hs = h1 - s1 * e_i
 
+    
     mo10 = numpy.empty_like(hs)
     mo10[:,mo_occ==0,:] = -hs[:,mo_occ==0,:] * e_ai
     mo10[:,mo_occ>0,:] = -s1[:,mo_occ>0,:] * .5
-
+    print('### mo10[:,mo_occ>0,:]')
+    print(mo10[:,mo_occ>0,:])
+    
     e_ji = e_i.reshape(-1,1) - e_i
     mo_e10 = hs[:,mo_occ>0,:] + mo10[:,mo_occ>0,:] * e_ji
+    
+    print(np.shape(e_ji))
+    print(np.shape(mo10))
+    print(np.shape(mo_e10))    
+    
+    print('### end: _solve_mo1_uncoupled')
     return mo10, mo_e10
 
 #TODO: merge to hessian.rhf.solve_mo1 function
@@ -190,6 +228,8 @@ def solve_mo1(nmrobj, mo_energy=None, mo_coeff=None, mo_occ=None,
     if mo_occ is None: mo_occ = nmrobj._scf.mo_occ
     if with_cphf is None: with_cphf = nmrobj.cphf
 
+    print('### begin: solve_mo1')
+
     cput1 = (logger.process_clock(), logger.perf_counter())
     log = logger.Logger(nmrobj.stdout, nmrobj.verbose)
 
@@ -197,10 +237,31 @@ def solve_mo1(nmrobj, mo_energy=None, mo_coeff=None, mo_occ=None,
     orbo = mo_coeff[:,mo_occ>0]
     if h1 is None:
         dm0 = nmrobj._scf.make_rdm1(mo_coeff, mo_occ)
+        print('### dm0 (solve_mo1)')
+        print(np.shape(dm0))
+        print('### h1 (solve_mo1)')
+        print('#### nmrobj.get_fock(dm0) :', np.shape(nmrobj.get_fock(dm0)))        
+        print('#### mo_coeff.conj        :', np.shape(mo_coeff.conj()))        
+        print('#### orbo                 :', np.shape(orbo))        
+
+        ### Compute (C_i+C_a)F^(1)C_i with C_i (M*M) 
+        ### with C_i (M*N) columns vector of unperturbed occ.        
+        ### with C_a (M*(M-N)) columns vector of unperturbed unocc.
+        ### with F^(1) (3*M*M) perturbed Fock matrix in 3 directions
+        
+        ### h1 = F^{(1)}
         h1 = lib.einsum('xpq,pi,qj->xij', nmrobj.get_fock(dm0),
                         mo_coeff.conj(), orbo)
+        
+        print('### np.shape(h1) :', np.shape(h1))         
         cput1 = log.timer('first order Fock matrix', *cput1)
+        
     if s1 is None:
+        ### Compute (C_i+C_a)S^(1)C_i with C_i (M*M) 
+        ### with C_i (M*N) columns vector of occ.        
+        ### with C_a (M*(M-N)) columns vector of unocc.
+        ### with S^(1) (3*M*M) perturbed overlap matrix in 3 directions  
+        
         s1 = lib.einsum('xpq,pi,qj->xij', nmrobj.get_ovlp(mol),
                         mo_coeff.conj(), orbo)
 
@@ -212,8 +273,18 @@ def solve_mo1(nmrobj, mo_energy=None, mo_coeff=None, mo_occ=None,
         mo10, mo_e10 = cphf.solve(vind, mo_energy, mo_occ, h1, s1,
                                   nmrobj.max_cycle_cphf, nmrobj.conv_tol,
                                   verbose=log)
+        print('### mo10, mo_e10')
+        print(np.shape(mo10))
+        print(np.shape(mo_e10))
+        
     else:
         mo10, mo_e10 = _solve_mo1_uncoupled(mo_energy, mo_occ, h1, s1)
+        print('### mo10, mo_e10')
+        print(np.shape(mo10))
+        print(np.shape(mo_e10))
+        
+    print('### end: solve_mo1')
+
 
     log.timer('solving mo1 eqn', *cput1)
     return mo10, mo_e10
@@ -223,6 +294,7 @@ def get_fock(nmrobj, dm0=None, gauge_orig=None):
     r'''First order partial derivatives of Fock matrix wrt external magnetic
     field.  \frac{\partial F}{\partial B}
     '''
+    ### Perturbed Fock matrix in the AO basis 3xMxM
     if dm0 is None: dm0 = nmrobj._scf.make_rdm1()
     if gauge_orig is None: gauge_orig = nmrobj.gauge_orig
 
@@ -230,6 +302,10 @@ def get_fock(nmrobj, dm0=None, gauge_orig=None):
     h1 = make_h10(nmrobj.mol, dm0, gauge_orig, log)
     if nmrobj.chkfile:
         lib.chkfile.dump(nmrobj.chkfile, 'nmr/h1', h1)
+    print('### h1 (get_fock)')
+    print(np.shape(h1))
+        
+        
     return h1
 
 def gen_vind(mf, mo_coeff, mo_occ):
