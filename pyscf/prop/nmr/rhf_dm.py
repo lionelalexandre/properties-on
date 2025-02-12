@@ -77,7 +77,7 @@ def dia(nmrobj, gauge_orig=None, shielding_nuc=None, dm0=None):
     return numpy.array(msc_dia).reshape(-1, 3, 3)
 
 
-def para(nmrobj, mo10=None, mo_coeff=None, mo_occ=None, shielding_nuc=None):
+def para(nmrobj, dm10=None, mo10=None, mo_coeff=None, mo_occ=None, shielding_nuc=None):
     '''Paramagnetic part of NMR shielding tensors.
     '''
     if mo_coeff is None:      mo_coeff = nmrobj._scf.mo_coeff
@@ -267,6 +267,7 @@ def _solve_dm10_uncoupled(nmrobj, mo_energy = None, mo_coeff = None, mo_occ = No
     d0 = C_i @ C_i.conj().T
     dsd = - (d0 @ s1) @ d0
     D_ia = np.zeros((cart, M, M))
+    multiplication_count = 0
     for n in range(cart):
         for i in range(num_occ):
             for a in range(num_vir):
@@ -274,6 +275,8 @@ def _solve_dm10_uncoupled(nmrobj, mo_energy = None, mo_coeff = None, mo_occ = No
                 denominator = e_i[i] - e_a[a]
                 alpha_ia = np.inner(C_i[:,i],(((h1[n]-e_i[i]*s1[n])/(denominator)) @ C_a[:,a]))
                 D_ia[n] += x_ia*alpha_ia
+                multiplication_count += 1
+    print(f"Total matrix multiplications: {multiplication_count}")
     D_ai = - D_ia.transpose(0,2,1)
     D_ii = .5*dsd
     D1 = dsd + D_ia + D_ai
@@ -459,3 +462,7 @@ if __name__ == '__main__':
     print(lib.finger(msc) - -123.98600632099961)
 
 
+print("msc_para_m:")
+msc_para_m, para_vir_m, para_occ_m = para(nmr)            #doing mo10, checked
+print("msc_para_dm:")
+msc_para, para_vir, para_occ = para(nmr, dm10=True)       #doing dm10, checked
