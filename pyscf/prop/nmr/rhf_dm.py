@@ -77,7 +77,7 @@ def dia(nmrobj, gauge_orig=None, shielding_nuc=None, dm0=None):
     return numpy.array(msc_dia).reshape(-1, 3, 3)
 
 
-def para(nmrobj, dm10=None, mo10=None, mo_coeff=None, mo_occ=None, shielding_nuc=None):
+def para(nmrobj, mo10=None, dm10=None, mo_coeff=None, mo_occ=None, shielding_nuc=None):
     '''Paramagnetic part of NMR shielding tensors.
     '''
     if mo_coeff is None:      mo_coeff = nmrobj._scf.mo_coeff
@@ -462,7 +462,7 @@ if __name__ == '__main__':
     print(lib.finger(msc) - -123.98600632099961)
 
 
-print("msc_para_m:")
-msc_para_m, para_vir_m, para_occ_m = para(nmr)            #doing mo10, checked
-print("msc_para_dm:")
-msc_para, para_vir, para_occ = para(nmr, dm10=True)       #doing dm10, checked
+#print("msc_para_m:")
+#msc_para_m, para_vir_m, para_occ_m = para(nmr)            #doing mo10, checked
+#print("msc_para_dm:")
+#msc_para, para_vir, para_occ = para(nmr, dm10=True)       #doing dm10, checked
