@@ -1,0 +1,32 @@
+#%Module -*- tcl -*-
+##
+## template modulefile
+##
+proc ModulesHelp { } {
+        global version
+}
+
+module-whatis   "PYSCF-ON"
+
+#
+# potential useful env changes ...
+#
+module load python/3.9.7
+module load intel-oneapi-compilers/2023.1.0/gcc@11.2.0-rex53zv
+module load intel-oneapi-mkl/2023.1.0/gcc@11.2.0-nmrac45
+
+#set ASE /gpfs/home/ltruflan/codes/ase
+#prepend-path PATH $ASE/bin
+#prepend-path PYTHONPATH $ASE
+#
+# echo useful data back to the user
+#
+set curMod [module-info name]
+if { [ module-info mode load ] } {
+#        ModulesHelp
+        puts stderr " '$curMod' load complete."
+}
+if { [ module-info mode remove ] } {
+#        ModulesHelp
+        puts stderr " '$curMod' unload complete."
+}
