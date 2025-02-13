@@ -80,20 +80,29 @@ def dia(nmrobj, gauge_orig=None, shielding_nuc=None, dm0=None):
 def para(nmrobj, mo10=None, dm10=None, mo_coeff=None, mo_occ=None, shielding_nuc=None):
     '''Paramagnetic part of NMR shielding tensors.
     '''
+    
     if mo_coeff is None:      mo_coeff = nmrobj._scf.mo_coeff
     if mo_occ is None:        mo_occ = nmrobj._scf.mo_occ
     if shielding_nuc is None: shielding_nuc = nmrobj.shielding_nuc
 
-    t0 = time.process_time()
+    t0 = time.perf_counter()
 
-    if (mo10 is None) and (dm10 is None): mo10 = nmrobj.solve_mo1()[0]
-    if (mo10 is None) and (dm10 is True): _, dm10_oo, _, dm10_vo = _solve_dm10_uncoupled(nmrobj)
-    if (mo10 is True): mo10 = nmrobj.solve_mo1()[0]
+    #if (mo10 is None) and (dm10 is None): mo10 = nmrobj.solve_mo1()[0]
+    #if (mo10 is None) and (dm10 is True): _, dm10_oo, _, dm10_vo = _solve_dm10_uncoupled(nmrobj, mo_coeff, mo_occ)
+    #if (mo10 is True): mo10 = nmrobj.solve_mo1()[0]
+    
+    if dm10 is True:
+        _, dm10_oo, _, dm10_vo = _solve_dm10_uncoupled(nmrobj, mo_coeff, mo_occ)
+    else:
+        print("toto")
+        mo10 = nmrobj.solve_mo1()[0]
+    
 
-    mol = nmrobj.mol
+    #mol = nmrobj.mol
     para_vir = numpy.empty((len(shielding_nuc),3,3))
     para_occ = numpy.empty((len(shielding_nuc),3,3))
-    if not( (mo10 is None) and (dm10 is True) ):
+    if (mo10 is not None) and (dm10 is not True):
+        print("im doing mo part")
         occidx = mo_occ > 0
         viridx = mo_occ == 0
         orbo = mo_coeff[:,occidx]
@@ -101,7 +110,7 @@ def para(nmrobj, mo10=None, dm10=None, mo_coeff=None, mo_occ=None, shielding_nuc
 
         dm10_oo = numpy.asarray([reduce(numpy.dot, (orbo, x[occidx], orbo.T.conj())) for x in mo10])
         dm10_vo = numpy.asarray([reduce(numpy.dot, (orbv, x[viridx], orbo.T.conj())) for x in mo10])
-
+        print("i finished mo part")
     for n, atm_id in enumerate(shielding_nuc):
         mol.set_rinv_origin(mol.atom_coord(atm_id))
         # H^{01} = 1/2(A01 dot p + p dot A01) => (a01p + c.c.)/2 ~ <a01p>
@@ -111,7 +120,7 @@ def para(nmrobj, mo10=None, dm10=None, mo_coeff=None, mo_occ=None, shielding_nuc
         para_occ[n] = 2 * numpy.einsum('xji,yij->xy', dm10_oo, h01i) * 2 # *2 for + c.c.
         para_vir[n] = 2 * numpy.einsum('xji,yij->xy', dm10_vo, h01i) * 2 # *2 for + c.c.
     msc_para = para_occ + para_vir
-    t1 = time.process_time()
+    t1 = time.perf_counter()
     dt = t1 - t0
     print("time spent in shielding=", dt)
     return msc_para, para_vir, para_occ
@@ -198,6 +207,8 @@ def solve_mo1(nmrobj, mo_energy=None, mo_coeff=None, mo_occ=None,
             If a function is given, CPHF equation will be solved, and the
             given function is used to compute induced potential
     '''
+    start = time.perf_counter()
+    
     if mo_energy is None: mo_energy = nmrobj._scf.mo_energy
     if mo_coeff is None: mo_coeff = nmrobj._scf.mo_coeff
     if mo_occ is None: mo_occ = nmrobj._scf.mo_occ
@@ -245,19 +256,28 @@ def solve_mo1(nmrobj, mo_energy=None, mo_coeff=None, mo_occ=None,
         mo10, mo_e10 = _solve_mo1_uncoupled(mo_energy, mo_occ, h1, s1)
 
     log.timer('solving mo1 eqn', *cput1)
+    
+    stop = time.perf_counter()
+    execution_time = stop - start
+    print("exec time_m:", execution_time)
+    
     return mo10, mo_e10
 
-def _solve_dm10_uncoupled(nmrobj, mo_energy = None, mo_coeff = None, mo_occ = None,
+def _solve_dm10_uncoupled(nmrobj, mo_coeff = None, mo_occ = None, mo_energy = None,
                           h1 = None, s1 = None):
     '''Build first-order density matrix'''
-    mol = nmrobj.mol
-    if mo_energy is None: mo_energy = nmrobj._scf.mo_energy
+
+    start = time.perf_counter()
+    
     if mo_coeff is None: mo_coeff = nmrobj._scf.mo_coeff
     if mo_occ is None: mo_occ = nmrobj._scf.mo_occ
+    if mo_energy is None: mo_energy = nmrobj._scf.mo_energy
+    mol = nmrobj.mol
     if h1 is None:
-       dm0 = nmrobj._scf.make_rdm1()
+       dm0 = nmrobj._scf.make_rdm1(mo_coeff, mo_occ)
        h1 = make_h10(mol, dm0)
     if s1 is None: s1 = make_s10(mol)
+     
     occidx = mo_occ > 0
     viridx = mo_occ == 0
     num_occ, num_vir = np.sum(occidx), np.sum(viridx)
@@ -267,16 +287,20 @@ def _solve_dm10_uncoupled(nmrobj, mo_energy = None, mo_coeff = None, mo_occ = No
     d0 = C_i @ C_i.conj().T
     dsd = - (d0 @ s1) @ d0
     D_ia = np.zeros((cart, M, M))
-    multiplication_count = 0
+    
     for n in range(cart):
         for i in range(num_occ):
             for a in range(num_vir):
-                x_ia = np.outer(C_i[:,i],C_a[:,a])
+                x_ia = np.outer(C_i[:,i],C_a[:,a]) 
                 denominator = e_i[i] - e_a[a]
-                alpha_ia = np.inner(C_i[:,i],(((h1[n]-e_i[i]*s1[n])/(denominator)) @ C_a[:,a]))
-                D_ia[n] += x_ia*alpha_ia
-                multiplication_count += 1
-    print(f"Total matrix multiplications: {multiplication_count}")
+                intermediate_result = ((h1[n]-e_i[i]*s1[n])/(denominator))     #(matrix - matrix*scalar)/scalar
+                result = (intermediate_result @ C_a[:,a])                      #matrix * vector
+                alpha_ia = np.inner(C_i[:,i],result)                           #vector * matrix
+                D_ia[n] += x_ia*alpha_ia                                       #matrix * scalar
+                
+    stop = time.perf_counter()
+    execution_time = stop - start
+    print("exec time_dm:", execution_time)
     D_ai = - D_ia.transpose(0,2,1)
     D_ii = .5*dsd
     D1 = dsd + D_ia + D_ai
@@ -359,16 +383,19 @@ class NMR(lib.StreamObject):
 
         unit_ppm = nist.ALPHA**2 * 1e6
         msc_dia = self.dia(self.gauge_orig)
-
-        if (mo1 is None) and (use_dm10 is None):
-            self.mo10, self.mo_e10 = self.solve_mo1()
-            mo1 = self.mo10
+        
+        #if (mo1 is None) and (use_dm10 is None):   
             
         if use_dm10 is True:
+            print("toto")
             msc_para, para_vir, para_occ = self.para(dm10=True)
         else:
+            print("toto.")
+            self.mo10, self.mo_e10 = self.solve_mo1()
+            mo1 = self.mo10
             msc_para, para_vir, para_occ = self.para(mo10=mo1)
             
+
         msc_dia *= unit_ppm
         msc_para *= unit_ppm
         para_vir *= unit_ppm
@@ -420,8 +447,8 @@ if __name__ == '__main__':
         [1   , (0. , 0. , .917)],
         ['F' , (0. , 0. , 0.)], ])
     mol.nucmod = {'F': 2} # gaussian nuclear model
-    mol.basis = {'H': '6-31g',
-                 'F': '6-31g',}
+    mol.basis = {'H': '6-311++g**',
+                 'F': '6-311++g**',}
     mol.build()
 
     rhf = scf.RHF(mol).run()
@@ -462,7 +489,10 @@ if __name__ == '__main__':
     print(lib.finger(msc) - -123.98600632099961)
 
 
-#print("msc_para_m:")
-#msc_para_m, para_vir_m, para_occ_m = para(nmr)            #doing mo10, checked
-#print("msc_para_dm:")
-#msc_para, para_vir, para_occ = para(nmr, dm10=True)       #doing dm10, checked
+#msc_para, para_vir, para_occ = para(nmr)
+#Msc_para, para_vir, para_occ = para(nmr, dm10=True)
+
+#print("mo10:")
+#nmr.shielding()
+#print("dm10:")
+#nmr.shielding(use_dm10=True)
