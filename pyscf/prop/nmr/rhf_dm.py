@@ -34,6 +34,7 @@ from pyscf.scf import cphf
 from pyscf.scf import _response_functions  # noqa
 from pyscf.data import nist
 import numpy as np
+import time
 
 def dia(nmrobj, gauge_orig=None, shielding_nuc=None, dm0=None):
     '''Diamagnetic part of NMR shielding tensors.
@@ -82,6 +83,9 @@ def para(nmrobj, mo10=None, dm10=None, mo_coeff=None, mo_occ=None, shielding_nuc
     if mo_coeff is None:      mo_coeff = nmrobj._scf.mo_coeff
     if mo_occ is None:        mo_occ = nmrobj._scf.mo_occ
     if shielding_nuc is None: shielding_nuc = nmrobj.shielding_nuc
+    
+    t0 = time.process_time()
+    
     if (mo10 is None) and (dm10 is None): mo10 = nmrobj.solve_mo1()[0]
     if (mo10 is None) and (dm10 is True): dm10_oo, dm10_ov = 3, 3
     if (mo10 is True): mo10 = nmrobj.solve_mo1()[0]
@@ -110,6 +114,9 @@ def para(nmrobj, mo10=None, dm10=None, mo_coeff=None, mo_occ=None, shielding_nuc
         para_occ[n] = numpy.einsum('xji,yij->xy', dm10_oo, h01i) * 2 # *2 for + c.c.
         para_vir[n] = numpy.einsum('xji,yij->xy', dm10_vo, h01i) * 2 # *2 for + c.c.
     msc_para = para_occ + para_vir
+    t1 = time.process_time()
+    dt = t1 - t0
+    print('time spend in shielding =',dt )
     return msc_para, para_vir, para_occ
 
 def make_h10(mol, dm0, gauge_orig=None, verbose=logger.WARN):
