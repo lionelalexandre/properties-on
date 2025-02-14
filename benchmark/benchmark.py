@@ -1,15 +1,12 @@
-#import os
-#os.environ["PYSCF_EXT_PATH"] = "/home/teodora/internship/pyscf-on/properties-on"
-
 import sys
 import pyscf
 from pyscf import gto, scf
 from pyscf import lib
-from pyscf.prop import nmr
 import numpy
 import importlib.util
 print(importlib.util.find_spec('pyscf'))
-from rhf_dm import NMR
+from pyscf.prop import nmr
+from pyscf.prop.nmr.rhf_dm import NMR
 
 # Directory containing molecule xyz files
 molecules_dir = 'xyz'
