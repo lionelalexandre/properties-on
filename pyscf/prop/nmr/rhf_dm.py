@@ -48,8 +48,9 @@ def dia(nmrobj, gauge_orig=None, shielding_nuc=None, dm0=None):
     mol = nmrobj.mol
     mf = nmrobj._scf
 
-    if getattr(mf, 'with_x2c', None):
-        raise NotImplementedError('X2C for NMR shielding')
+#    commented out for curta SHOULD NOT BE COMMENTED OUT!
+#    if getattr(mf, 'with_x2c', None):
+#        raise NotImplementedError('X2C for NMR shielding')
 
     if getattr(mf, 'with_qmmm', None):
         raise NotImplementedError('NMR shielding with QM/MM')
