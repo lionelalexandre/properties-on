@@ -25,19 +25,20 @@ Non-relativistic NMR shielding tensor
 ### LAT: Identification of terms wrt. to Wolinski J. Am. Chem. Soc., Vol. 112, No. 23, 1990
 '''
 
+
 from functools import reduce
 import numpy
-from pyscf import lib, gto
+from pyscf import lib
 from pyscf.lib import logger
 from pyscf.scf import _vhf
 from pyscf.scf import cphf
 from pyscf.scf import _response_functions  # noqa
 from pyscf.data import nist
 from scipy import linalg
-import time
 from scipy.sparse.linalg  import cg, gmres
 from scipy.sparse import csc_matrix
 from sksparse.cholmod import cholesky
+from pyscf.prop.nmr.utils import diis, build_ab, build_q, gershgorin_max, gershgorin_min
 
 def dia(nmrobj, gauge_orig=None, shielding_nuc=None, dm0=None):
     '''Diamagnetic part of NMR shielding tensors.
@@ -82,12 +83,12 @@ def dia(nmrobj, gauge_orig=None, shielding_nuc=None, dm0=None):
 def para(nmrobj, mo10=None, mo_coeff=None, mo_occ=None, shielding_nuc=None):
     '''Paramagnetic part of NMR shielding tensors.
     '''
+
     if mo_coeff is None:      mo_coeff = nmrobj._scf.mo_coeff
     if mo_occ is None:        mo_occ = nmrobj._scf.mo_occ
     if shielding_nuc is None: shielding_nuc = nmrobj.shielding_nuc
     if mo10 is None: mo10 = nmrobj.solve_mo1()[0]
 
-    t0 = time.perf_counter()
     mol = nmrobj.mol
     para_vir = numpy.empty((len(shielding_nuc),3,3))
     para_occ = numpy.empty((len(shielding_nuc),3,3))
@@ -107,29 +108,33 @@ def para(nmrobj, mo10=None, mo_coeff=None, mo_occ=None, shielding_nuc=None):
         para_occ[n] = numpy.einsum('xji,yij->xy', dm10_oo, h01i) * 2 # *2 for + c.c.
         para_vir[n] = numpy.einsum('xji,yij->xy', dm10_vo, h01i) * 2 # *2 for + c.c.
     msc_para = para_occ + para_vir
-    t1 = time.perf_counter()
-    dt = t1 - t0
-    print("time spent in shielding=", dt)
+
     return msc_para, para_vir, para_occ
 
-def para_dm(nmrobj, method = 'mcw', mo_coeff=None, mo_occ=None, shielding_nuc=None):
+def para_dm(nmrobj, method = 'mcw', dm10 = None, mo_coeff=None, mo_occ=None, shielding_nuc=None):
     '''Paramagnetic part of NMR shielding tensors, using DM approach in AO basis
     '''
-    if mo_coeff is None:      mo_coeff = nmrobj._scf.mo_coeff
-    if mo_occ is None:        mo_occ = nmrobj._scf.mo_occ
+
+    if mo_coeff is None: mo_coeff = nmrobj._scf.mo_coeff
+    if mo_occ is None: mo_occ = nmrobj._scf.mo_occ
     if shielding_nuc is None: shielding_nuc = nmrobj.shielding_nuc
 
-    t0 = time.perf_counter()
     mol = nmrobj.mol
         
     if ( method == 'mcw'  ): 
-        dm10, *_ = solve_dm10_mcweeny(nmrobj, mo_coeff, mo_occ)
+        if dm10 is None: dm10 = solve_dm10_mcweeny(nmrobj, mo_coeff, mo_occ)[0]
         
     elif ( method == 'slv' ): 
-        dm10 = solve_dm10_sylvester(nmrobj, mo_coeff, mo_occ)
+        if dm10 is None: dm10 = solve_dm10_sylvester(nmrobj, mo_coeff, mo_occ)
+        
+    elif ( method == 'tc2' ):
+        if dm10 is None: dm10 = purification_first_order(nmrobj)[1]
+        
+    elif ( method == 'hpcp' ):
+        if dm10 is None: dm10 = purification_first_order(nmrobj, method='hpcp')[1]
         
     else:
-         raise ValueError(f"Unknown method '{method}'. Choose from: 'mcw', 'slv'.")
+         raise ValueError(f"Unknown method '{method}'. Choose from: 'mcw', 'slv', 'tc2', 'hpcp'.")
     
     msc_para = numpy.zeros((len(shielding_nuc),3,3))
     for n, atm_id in enumerate(shielding_nuc):
@@ -137,11 +142,8 @@ def para_dm(nmrobj, method = 'mcw', mo_coeff=None, mo_occ=None, shielding_nuc=No
         h01i = mol.intor_asymmetric('int1e_prinvxp', 3)
         for x in range(3):
             for y in range(3):
-                msc_para[n,x,y] = 2 * numpy.trace(numpy.matmul(dm10[x,:,:], h01i[y,:,:]))       
+                msc_para[n,x,y] = 2 * numpy.trace(dm10[x,:,:] @ h01i[y,:,:])       
                     
-    t1 = time.perf_counter()
-    dt = t1 - t0
-    print("time spent in shielding=", dt)
     return msc_para
 
 def make_h10(mol, dm0, gauge_orig=None, verbose=logger.WARN):
@@ -260,34 +262,18 @@ def solve_mo1(nmrobj, mo_energy=None, mo_coeff=None, mo_occ=None,
             vind = with_cphf
         else:
             vind = gen_vind(nmrobj._scf, mo_coeff, mo_occ)
-            print('##########im going to cphf#############')
         mo10, mo_e10 = cphf.solve(vind, mo_energy, mo_occ, h1, s1,
                                   nmrobj.max_cycle_cphf, nmrobj.conv_tol,
                                   verbose=log)
-
     else:
-        print('###########im not going to cphf############')
         mo10, mo_e10 = _solve_mo1_uncoupled(mo_energy, mo_occ, h1, s1)
 
     log.timer('solving mo1 eqn', *cput1)
     
     return mo10, mo_e10
 
-def _solve_dm10_uncoupled(nmrobj, mo_coeff = None, mo_occ = None, mo_energy = None,
-                          h1 = None, s1 = None):
-    '''Build first-order density matrix'''
-    
-    t0 = time.perf_counter()
-    
-    if mo_coeff is None: mo_coeff = nmrobj._scf.mo_coeff
-    if mo_occ is None: mo_occ = nmrobj._scf.mo_occ
-    if mo_energy is None: mo_energy = nmrobj._scf.mo_energy
-    mol = nmrobj.mol
-    if h1 is None:
-       dm0 = nmrobj._scf.make_rdm1(mo_coeff, mo_occ)
-       h1 = make_h10(mol, dm0, gauge_orig=nmrobj.gauge_orig)
-    if s1 is None: s1 = make_s10(mol, gauge_orig=nmrobj.gauge_orig)
-     
+def _solve_dm10_uncoupled(mo_coeff, mo_occ, mo_energy, h1, s1):
+   
     occidx = mo_occ > 0
     viridx = mo_occ == 0
     nocc, nvir = numpy.sum(occidx), numpy.sum(viridx)
@@ -297,6 +283,7 @@ def _solve_dm10_uncoupled(nmrobj, mo_coeff = None, mo_occ = None, mo_energy = No
     D0 = Co @ Co.conj().T
     Doo = -.5* (D0 @ s1) @ D0
     Dov = numpy.zeros((cart, M, M))
+    
     
     for n in range(cart):
         for i in range(nocc):
@@ -310,29 +297,27 @@ def _solve_dm10_uncoupled(nmrobj, mo_coeff = None, mo_occ = None, mo_energy = No
     Dvo = - Dov.transpose(0,2,1)
     D1 = 2*Doo + Dov + Dvo
     
-    t1 = time.perf_counter()
-    dt = t1 - t0
-    print("time spent in the routine MCWEENY:", dt)
-    
     return D1, Doo, Dov, Dvo
 
 def solve_dm10_mcweeny(nmrobj, mo_coeff=None, mo_occ=None, mo_energy=None,
                h1=None, s1=None, with_cphf=None):
-
+    '''Build first-order density matrix in AO basis
+        based on SOS-McWeeny-DMPT approach'''
+     
     if mo_coeff is None: mo_coeff = nmrobj._scf.mo_coeff
     if mo_occ is None: mo_occ = nmrobj._scf.mo_occ
     if mo_energy is None: mo_energy = nmrobj._scf.mo_energy
     if with_cphf is None: with_cphf = nmrobj.cphf
     dm0 = nmrobj._scf.make_rdm1(mo_coeff, mo_occ)
+    mol = nmrobj.mol
     if h1 is None:
-        h1 = make_h10(nmrobj.mol, dm0, gauge_orig=nmrobj.gauge_orig)
+        h1 = make_h10(mol, dm0, gauge_orig=nmrobj.gauge_orig)
     if s1 is None:
-        s1 = make_s10(nmrobj.mol, gauge_orig=nmrobj.gauge_orig)
-
-    D1, Doo, Dov, Dvo = _solve_dm10_uncoupled(nmrobj, mo_coeff, mo_occ, mo_energy, h1, s1)
+        s1 = make_s10(mol, gauge_orig=nmrobj.gauge_orig)
 
     if not with_cphf:
-        print("no cphf above!")
+        D1, Doo, Dov, Dvo = _solve_dm10_uncoupled(mo_coeff, mo_occ,
+                                                  mo_energy, h1, s1)
         return D1, Doo, Dov, Dvo
 
     else: 
@@ -341,21 +326,39 @@ def solve_dm10_mcweeny(nmrobj, mo_coeff=None, mo_occ=None, mo_energy=None,
         nocc, nvir = numpy.sum(occidx), numpy.sum(viridx)
         eo, ev = mo_energy[occidx], mo_energy[viridx]
         Co, Cv = mo_coeff[:, occidx], mo_coeff[:, viridx]
-        cart = s1.shape[0]
-        f1 = numpy.zeros_like(h1)
+        cart, M = s1.shape[0], s1.shape[1]
+        D0 = .5*dm0
+        S0 = mol.intor('int1e_ovlp')
+        F0 = nmrobj._scf.get_fock(dm=dm0)
+        Doo = -.5* (D0 @ s1) @ D0
         
         vresp = nmrobj._scf.gen_response(singlet=True, hermi=2)
         
-        max_cycle = 1000
-        conv_tol = 1.0e-12
+        max_cycle = 20
+        conv_tol = 1e-9
+        D1 = numpy.zeros((cart, M, M))
+        Dov = numpy.zeros_like(D1)
         for n in range(cart):
-            Dov_n = Dov[n].copy()
+            D1_n = D1[n].copy()
+            Dov_n = numpy.zeros_like(D1_n)
+            F_list = []
+            e_list = []
             for cycle in range(max_cycle):
-                v1 = vresp([Dov_n])[0]
-                f1[n] = h1[n] + 2*v1
+                v1 = vresp([D1_n])
+                F1_n = h1[n] + 2*v1
+                
+                diis_r = F1_n @ D0 @ S0 - S0 @ D0 @ F1_n \
+                        + F0 @ D1_n @ S0 - S0 @ D1_n @ F0 \
+                        + F0 @ D0 @ s1[n] - s1[n] @ D0 @ F0 \
+                                                                        
+                F_list.append(F1_n)
+                e_list.append(diis_r)
+                
+                F1_n = diis(F_list, e_list, max_diis=6)
+
                 Dov_update = numpy.zeros_like(Dov_n)
                 for i in range(nocc):
-                    nominator = f1[n]-eo[i]*s1[n]
+                    nominator = F1_n - eo[i] * s1[n]
                     for j in range(nvir):
                         Xov = numpy.outer(Co[:,i],Cv[:,j]) 
                         denominator = eo[i] - ev[j]                 
@@ -367,96 +370,64 @@ def solve_dm10_mcweeny(nmrobj, mo_coeff=None, mo_occ=None, mo_energy=None,
                 if err < conv_tol:
                     break
                 
-                alpha = 0.3
+                alpha = 1
                 Dov_n = (1 - alpha) * Dov_n + alpha * Dov_update
             
-            D1[n] = 2 * Doo[n] + Dov_n - Dov_n.T
+                D1_n = 2 * Doo[n] + Dov_n - Dov_n.T
+                
+            D1[n] = D1_n
             Dov[n] = Dov_n
-            Dvo[n] = -Dov_n.T
             
             print(f"n: {n}, cycle: {cycle}, err = {err}, v1 = {numpy.linalg.norm(v1)}")
             
-        print("cphf above!")
+    Dvo = - Dov.transpose(0,2,1)
 
     return D1, Doo, Dov, Dvo
 
-def build_abq(nmrobj, mo_coeff=None, mo_occ=None,
-                         dm0=None, h1=None, s1=None):
-    
-    mol = nmrobj.mol
-    if mo_coeff is None: mo_coeff = nmrobj._scf.mo_coeff
-    if mo_occ is None: mo_occ = nmrobj._scf.mo_occ
-    if dm0 is None: dm0 = nmrobj._scf.make_rdm1(mo_coeff, mo_occ)
-    if h1 is None: h1 = make_h10(mol, dm0, gauge_orig=nmrobj.gauge_orig)
-    if s1 is None: s1 = make_s10(mol, gauge_orig=nmrobj.gauge_orig)
-    
-    S0 = mol.intor('int1e_ovlp')
-    Sinv = numpy.linalg.inv(S0)
-    F0 = nmrobj._scf.get_fock(dm=dm0)
-    D0 = .5 * dm0
-    I = numpy.eye(D0.shape[0])
-    cart, M = s1.shape[0], s1.shape[1]
-
-    A = Sinv @ (I - 2 * S0 @ D0) @ F0
-    B = F0 @ (I - 2 * D0 @ S0) @ Sinv
-
-    Q = numpy.zeros((cart, M, M))
-    for n in range(cart):
-        S1_n = s1[n]
-        F1_n = h1[n]
-        
-        Q_n = Sinv @ S1_n @ D0 @ F0 @ Sinv \
-            + Sinv @ F0 @ D0 @ S1_n @ Sinv \
-            - D0 @ F1_n @ Sinv \
-            - Sinv @ F1_n @ D0 \
-            + 2 * D0 @ F1_n @ D0
-            
-        Q[n] = Q_n
-            
-    return A, B, Q, M
-
-def solve_dm10_linear(nmrobj, mo_coeff=None, mo_occ=None, method='slv'):
+def solve_dm10_linear(S0, Sinv, F0, D0, S1, F1, method='slv'):
     '''
     Different iterative methods developed for solving the linear
     system of equation returning first-order density matrix in AO basis
     '''
+    M = S1.shape[1]
+    A, B = build_ab(S0, Sinv, F0, D0)
     
-    t0 = time.perf_counter()
+    if method != 'slv':
+        R = numpy.kron(numpy.eye(M), A) + numpy.kron(B.T, numpy.eye(M))
     
-    A, B, Q, M = build_abq(nmrobj, mo_coeff, mo_occ)
-    R = numpy.kron(numpy.eye(M), A) + numpy.kron(B.T, numpy.eye(M))
-    D1 = numpy.zeros((3, M, M))      
-    
+    D1 = numpy.zeros((3,M,M))       
     for n in range(3):
+        
+        Q_n = build_q(Sinv, F0, D0, S1[n], F1[n])
 
         if ( method == 'slv'):
         ########### A X + X B = Q #############
        
-            D1_n = linalg.solve_sylvester(A, B, Q[n])
+            D1_n = linalg.solve_sylvester(A, B, Q_n)
 
             
         elif ( method == 'gmres'):
         ##### ( I x A + B.T x I ) @ x = q #####
         ########      R           @ x = q #####
     
-            q = Q[n].reshape(M**2)
-            D1_n, info = gmres(R, q) #, rtol=1.0e-14, restart=100, maxiter=1000)
+            q = Q_n.reshape(M**2)
+            D1_n, info = gmres(R, q) 
             D1_n = D1_n.reshape((M, M))
         
         elif ( method == 'cg'):
         ####### R.T @ R @ x = R.T @ q #########
         #######    lhs  @ x =   rhs   #########
     
-            q = Q[n].reshape(M**2)
+            q = Q_n.reshape(M**2)
             lhs = R.T @ R
             rhs = R.T @ q
         
-            D1_n, info = cg(lhs, rhs) #, rtol=1.0e-14, maxiter=1000)
+            D1_n, info = cg(lhs, rhs) 
             D1_n = D1_n.reshape((M, M))
             
         elif ( method == 'cho'):
         
-            q = Q[n].reshape(M**2)
+            q = Q_n.reshape(M**2)
             lhs = R.T @ R
             rhs = R.T @ q
             
@@ -469,16 +440,15 @@ def solve_dm10_linear(nmrobj, mo_coeff=None, mo_occ=None, method='slv'):
             raise ValueError(f"Unknown method '{method}'. Choose from: 'slv', 'gmres', 'cg', 'cho'.")
         
         D1[n] = D1_n
-        
-    t1 = time.perf_counter()
-    dt = t1 - t0
-    print("time spent in the routine linear:", dt)
     
     return D1
 
+
 def solve_dm10_sylvester(nmrobj, mo_coeff=None, mo_occ=None,
                          dm0=None, h1=None, s1=None, with_cphf=None):
-    
+    '''Build first-order density matrix in AO basis
+        based on Sylvester-DMPT approach'''
+        
     mol = nmrobj.mol
     if mo_coeff is None: mo_coeff = nmrobj._scf.mo_coeff
     if mo_occ is None: mo_occ = nmrobj._scf.mo_occ
@@ -486,60 +456,173 @@ def solve_dm10_sylvester(nmrobj, mo_coeff=None, mo_occ=None,
     if h1 is None: h1 = make_h10(mol, dm0, gauge_orig=nmrobj.gauge_orig)
     if s1 is None: s1 = make_s10(mol, gauge_orig=nmrobj.gauge_orig)
     if with_cphf is None: with_cphf = nmrobj.cphf
-    
+        
     S0 = mol.intor('int1e_ovlp')
     Sinv = numpy.linalg.inv(S0)
     F0 = nmrobj._scf.get_fock(dm=dm0)
     D0 = .5 * dm0
-    cart = s1.shape[0]
-    I = numpy.eye(D0.shape[0])
-    
-    D1 = solve_dm10_linear(nmrobj, mo_coeff=mo_coeff, mo_occ=mo_occ)
     
     if not with_cphf:
-        print('no cphf above')
+        D1 = solve_dm10_linear(S0, Sinv, F0, D0, s1, h1)
         return D1
 
     else:
-        vresp = nmrobj._scf.gen_response(singlet=True, hermi=0)
         
-        max_cycle = 1000
-        conv_tol = 1.0e-12
+        vresp = nmrobj._scf.gen_response(singlet=True, hermi=2)
         
-        A = Sinv @ (I - 2 * S0 @ D0) @ F0
-        B = F0 @ (I - 2 * D0 @ S0) @ Sinv
+        A, B = build_ab(S0, Sinv, F0, D0)
         
-        for n in range(cart):
+        max_cycle = 20
+        conv_tol = 1e-09
+        D1 = numpy.zeros_like(s1)
+        for n in range(s1.shape[0]):
             S1_n = s1[n]
-            #D1_n = D1[n].copy() 
-            D1_n = numpy.zeros_like(D1[n])
+            D1_n = D1[n]
+            F_list = []
+            e_list = []
             for cycle in range(max_cycle):
                 
                 v1 = vresp([D1_n])[0]
                 
                 F1_n = h1[n] + 2*v1
+                                
+                diis_r = F1_n @ D0 @ S0 - S0 @ D0 @ F1_n \
+                        + F0 @ D1_n @ S0 - S0 @ D1_n @ F0 \
+                        + F0 @ D0 @ S1_n - S1_n @ D0 @ F0 \
+                                                                        
+                F_list.append(F1_n)
+                e_list.append(diis_r)
                 
-                Q_n = Sinv @ S1_n @ D0 @ F0 @ Sinv \
-                    + Sinv @ F0 @ D0 @ S1_n @ Sinv \
-                    - D0 @ F1_n @ Sinv \
-                    - Sinv @ F1_n @ D0 \
-                    + 2 * D0 @ F1_n @ D0    
-                            
+                F1_n = diis(F_list, e_list, max_diis=6)
+                    
+                Q_n = build_q(Sinv, F0, D0, S1_n, F1_n)  
+                
                 D1_update_n = linalg.solve_sylvester(A, B, Q_n)
                 err = numpy.linalg.norm(D1_update_n - D1_n)
-                
+                 
                 if err < conv_tol:
                     break
-                
-                alpha = 0.3
+                 
+                alpha = 1
                 D1_n = (1 - alpha) * D1_n + alpha * D1_update_n
             
             print(f"n: {n}, cycle: {cycle}, err = {err}, v1 = {numpy.linalg.norm(v1)}")
     
             D1[n] = D1_n
-        print('cphf above')
-        
+            
     return D1
+        
+def purification_first_order(nmrobj, method='tc2', max_cycle=50, tol=1e-9):
+
+    mol = nmrobj.mol
+    S0 = mol.intor("int1e_ovlp")
+    F0 = nmrobj._scf.get_fock()
+    mo_occ = nmrobj._scf.mo_occ
+    N = numpy.sum(mo_occ > 0)
+    S1 = make_s10(nmrobj.mol, gauge_orig=nmrobj.gauge_orig)
+    dm0 = nmrobj._scf.make_rdm1()
+    F1 = make_h10(nmrobj.mol, dm0, gauge_orig=nmrobj.gauge_orig)
+    I = numpy.eye(S0.shape[0], dtype=S0.dtype)
+    Sinv = numpy.linalg.inv(S0)
+    emax = gershgorin_max(Sinv @ F0)
+    emin = gershgorin_min(Sinv @ F0)
+    
+    if ( method == 'tc2' ):
+
+        D0 = ((emax * I - Sinv @ F0) @ Sinv) / (emax - emin)
+        D1 = (- emax * Sinv @ S1 @ Sinv - Sinv @ ( F1 - S1 @ Sinv @ F0 - F0 @ Sinv @ S1 ) @ Sinv )  / (emax - emin)
+        A = []
+        B = []
+        for cycle in range(max_cycle):
+        
+
+            trace_DS = numpy.trace(D0 @ S0)
+            delta_N = N - trace_DS
+            
+            if delta_N > 0:
+                theta = 1
+            else:
+                theta = 0
+            
+            alpha = 2 * (theta - 0.5)
+                
+            D0_update = D0 + alpha * (D0 - D0 @ S0 @ D0)
+                
+            D1update = D1 + alpha * ( D1 - (D1 @ S0 @ D0 \
+                                                      + D0 @ S1 @ D0 \
+                                                          + D0 @ S0 @ D1 ) )
+                    
+            err0 = numpy.linalg.norm(D0 - D0_update)
+                
+            err1 = numpy.linalg.norm(D1 - D1update)
+        
+            if err0 < tol and err1 < tol:
+                print(f"Converged at cycle {cycle}: ")
+                break
+                
+            D0 = D0_update
+            D1 = D1update
+            
+            a = numpy.linalg.norm(D1.transpose(0,2,1) + D1)
+            A.append(a)
+                
+            b = numpy.sum(numpy.trace(D1 @ S0, axis1=1, axis2=2) + numpy.trace(D0 @ S1, axis1=1, axis2=2))
+            B.append(b)
+            
+    elif ( method == 'hpcp' ):
+        
+        M = F0.shape[0]
+        theta = N/M
+        mu = numpy.trace(Sinv @ F0) / M     
+        beta1 = theta
+        beta2 = min( theta/(emax-mu), (1-theta)/(mu-emin) )
+        sss = Sinv @ S1 @ Sinv
+        sfs = Sinv @ F0 @ Sinv
+       
+        D0 = beta1 * Sinv + beta2 * ( mu * Sinv - sfs )
+        D1 = - beta1 * sss + beta2 * (- mu * sss - Sinv @ F1 @ Sinv + sss @ F0 @ Sinv + Sinv @ F0 @ sss)
+        A = []
+        B = []
+        for cycle in range(max_cycle): 
+           
+            ds = D0 @ S0
+            dsd = ds @ D0
+            dsdsd = dsd @ S0 @ D0
+            c = numpy.trace( (dsd  - dsdsd) @ S0 ) / numpy.trace(ds - dsd @ S0)
+               
+            D0_update = (1 - 2*c) * D0 + 2*(1 + c) * dsd - 2*dsdsd
+              
+            D1update = (1 - 2*c) * D1 \
+               + 2*(1 + c) * (D1 @ S0 @ D0 \
+                            + D0 @ S1 @ D0 \
+                            + D0 @ S0 @ D1) \
+                       - 2 * (D1 @ S0 @ dsd \
+                            + D0 @ S1 @ dsd \
+                            + ds @ D1 @ S0 @ D0 \
+                            + dsd @ S1 @ D0 \
+                            + dsd @ S0 @ D1)
+                                
+            err0 = numpy.linalg.norm(D0 - D0_update)
+                
+            err1 = numpy.linalg.norm(D1 - D1update)
+        
+            if err0 < tol and err1 < tol:
+                print(f"Converged at cycle {cycle}: ")
+                break
+                
+            D0 = D0_update
+            D1 = D1update
+            
+            a = numpy.linalg.norm(D1.transpose(0,2,1) + D1)
+            A.append(a)
+            
+            b = numpy.sum(numpy.trace(D1 @ S0, axis1=1, axis2=2) + numpy.trace(D0 @ S1, axis1=1, axis2=2))
+            B.append(b)
+            
+    else:
+        raise ValueError(f"Unknown method '{method}'. Choose from: 'tc2', 'hpcp'.")
+           
+    return D0, D1, A, B
 
 def get_fock(nmrobj, dm0=None, gauge_orig=None):
     r'''First order partial derivatives of Fock matrix wrt external magnetic
@@ -588,6 +671,7 @@ class NMR(lib.StreamObject):
 
         self.mo10 = None
         self.mo_e10 = None
+        self.dm10 = None
         self._keys = set(self.__dict__.keys())
 
     def dump_flags(self, verbose=None):
@@ -611,8 +695,9 @@ class NMR(lib.StreamObject):
     # Note mo10 is the imaginary part of MO^1
     def kernel(self, mo1=None):
         return self.shielding(mo1)
-    def shielding(self, method='mo1', mo1=None):
+    def shielding(self, mo1=None, dm1=None, method='mo1'):
         cput0 = (logger.process_clock(), logger.perf_counter())
+        _, t0 = cput0
         self.check_sanity()
         self.dump_flags()
 
@@ -620,15 +705,26 @@ class NMR(lib.StreamObject):
         msc_dia = self.dia(self.gauge_orig)
         
         if ( method == 'mcw'):
-            msc_para = self.para_dm()
+            if dm1 is None:
+                dm1 = self.dm10 = self.solve_dm10_mcweeny()[0]
+            msc_para = self.para_dm(dm10=dm1)
         elif ( method == 'slv'):
-            msc_para = self.para_dm(method = 'slv')
+            if dm1 is None:
+                dm1 = self.dm10 = self.solve_dm10_sylvester()
+            msc_para = self.para_dm(method = 'slv', dm10=dm1)
+        elif ( method == 'tc2'):
+            if dm1 is None:
+                dm1 = self.dm10 = self.purification_first_order()[1]
+            msc_para = self.para_dm(method = 'tc2', dm10=dm1)
+        elif ( method == 'hpcp'):
+            if dm1 is None:
+                dm1 = self.dm10 = self.purification_first_order(method='hpcp')[1]
+            msc_para = self.para_dm(method = 'hpcp', dm10=dm1)
         else:
             if mo1 is None:
                 self.mo10, self.mo_e10 = self.solve_mo1()
                 mo1 = self.mo10
             msc_para, para_vir, para_occ = self.para(mo10=mo1)
-            
 
         msc_dia *= unit_ppm
         msc_para *= unit_ppm
@@ -647,6 +743,10 @@ class NMR(lib.StreamObject):
 #                if self.verbose >= logger.INFO:
 #                    _write(self.stdout, para_occ[i], 'occ part of para-magnetism')
 #                    _write(self.stdout, para_vir[i], 'vir part of para-magnetism')
+        t1 = logger.perf_counter()
+        total_time = t1 - t0
+        print(f"time spent in shielding in seconds: {total_time}")
+
         return e11
 
     dia = dia
@@ -654,6 +754,9 @@ class NMR(lib.StreamObject):
     para_dm = para_dm
     get_fock = get_fock
     solve_mo1 = solve_mo1
+    solve_dm10_mcweeny = solve_dm10_mcweeny
+    solve_dm10_sylvester = solve_dm10_sylvester
+    purification_first_order = purification_first_order
 
     def get_ovlp(self, mol=None, gauge_orig=None):
         if mol is None: mol = self.mol
@@ -722,3 +825,4 @@ if __name__ == '__main__':
     print(msc[1][1,1], 292.578151)
     print(msc[1][2,2], 257.348176)
     print(lib.finger(msc) - -123.98600632099961)
+    
