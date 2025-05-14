@@ -5,8 +5,8 @@ from pyscf import lib
 import numpy
 import importlib.util
 print(importlib.util.find_spec('pyscf'))
-from pyscf.prop import nmr
 from pyscf.prop.nmr.rhf_dm import NMR
+
 
 # Directory containing molecule xyz files
 molecules_dir = 'xyz'
@@ -20,12 +20,9 @@ f = open(molecules_list,'r')
 for line in f :
     molecules.append(molecules_dir+'/'+line.strip())
 
-# List of molecule xyz files
-#molecules = ['benzene.xyz', 'naphtalene.xyz', 'anthracene.xyz', 'tetracene.xyz', 'pentacene.xyz', 'hexacene.xyz', 'heptacene.xyz', 'octacene.xyz', 'nonacene.xyz']#,decacene.xyz]
-
 # Basis set and convergence settings
-basis_set = '6-31G'
-conv_tolerance = 1e-10
+basis_set = '6-31g'
+conv_tolerance = 1e-14
 
 # Loop over each molecule
 for mol_file in molecules:
@@ -41,27 +38,37 @@ for mol_file in molecules:
     mf = scf.RHF(mol).set(conv_tol=conv_tolerance, conv_check=True)
     mf.kernel(dmp_scf=False)
 
-    print("mo10:")
-    # shielding with mo10
     nmr = NMR(mf)
     nmr.cphf = False
     nmr.gauge_orig = None
+
     msc = nmr.shielding()
 
-    print("dm10:")
-    # shielding with dm10
-    nmr_2 = NMR(mf)
-    nmr_2.cphf = False
-    nmr_2.gauge_orig = None
-    msc_dm = nmr_2.shielding(use_dm10=True)
+    msc_dm = nmr.shielding(method='mcw')
 
-    # purification
-    #mf = scf.RHF_DM(mol).set(conv_tol=conv_tolerance, conv_check=True)
-    #mf.kernel(dmp_scf=True)
-    #e_tot_rhf_dm = mf.energy_tot()
+    msc_s = nmr.shielding(method='slv')
 
-    # Print results
-    print("\nComparing msc with msc_dm (expected perturbed density matrix)...")
+    msc_tc2 = nmr.shielding(method='tc2')
+
+    msc_hpcp = nmr.shielding(method='hpcp')
+
+    # print results
     test_D1 = msc - msc_dm
     frobenius_norm = numpy.linalg.norm(test_D1.reshape(-1, test_D1.shape[-1]), ord='fro')
-    print(f"Frobenius norm difference: {frobenius_norm:.6e} (should be close to zero)")
+    print(f"Frobenius norm difference: {frobenius_norm:.9e}")
+
+    test_D1 = msc - msc_s
+    frobenius_norm = numpy.linalg.norm(test_D1.reshape(-1, test_D1.shape[-1]), ord='fro')
+    print(f"Frobenius norm difference: {frobenius_norm:.9e}")
+
+    test_D1 = msc - msc_tc2
+    frobenius_norm = numpy.linalg.norm(test_D1.reshape(-1, test_D1.shape[-1]), ord='fro')
+    print(f"Frobenius norm difference: {frobenius_norm:.9e}")
+
+    test_D1 = msc - msc_hpcp
+    frobenius_norm = numpy.linalg.norm(test_D1.reshape(-1, test_D1.shape[-1]), ord='fro')
+    print(f"Frobenius norm difference: {frobenius_norm:.9e}")
+
+    print('Norms of msc, msc_dm, msc_s, msc_tc2, msc_hpcp:', numpy.linalg.norm(msc.reshape(-1, msc.shape[-1]), ord='fro'), \
+	   numpy.linalg.norm(msc_dm.reshape(-1, msc_dm.shape[-1]), ord='fro'), numpy.linalg.norm(msc_s.reshape(-1, msc_s.shape[-1]), ord='fro'), \
+	   numpy.linalg.norm(msc_tc2.reshape(-1, msc_tc2.shape[-1]), ord='fro'), numpy.linalg.norm(msc_hpcp.reshape(-1, msc_hpcp.shape[-1]), ord='fro'))
