@@ -113,6 +113,11 @@ def para(nmrobj, mo10=None, dm10=None, mo_coeff=None, mo_occ=None, shielding_nuc
         # <H^{01},MO^1> = - Tr(Im[H^{01}],Im[MO^1]) = Tr(-Im[H^{01}],Im[MO^1])
         para_occ[n] = numpy.einsum('xji,yij->xy', dm10_oo, h01i) * 2 # *2 for + c.c.
         para_vir[n] = numpy.einsum('xji,yij->xy', dm10_vo, h01i) * 2 # *2 for + c.c.
+        dm10_ov = np.zeros((3,10,10))
+        for n, atm_id in enumerate(shielding_nuc):
+            dm10_ov[n,:,:] = -dm10_vo[n,:,:].T.conj()
+        print('para dm')
+        print(2*dm10_oo[0] + dm10_vo[0] + dm10_ov[0])
     msc_para = para_occ + para_vir
     t1 = time.process_time()
     dt = t1 - t0
@@ -142,6 +147,7 @@ def get_jk(mol, dm0):
     # J = Im[(i i|\mu g\nu) + (i gi|\mu \nu)] = -i (i i|\mu g\nu)
     # K = Im[(\mu gi|i \nu) + (\mu i|i g\nu)]
     #   = [-i (\mu g i|i \nu)] - h.c.   (-h.c. for anti-symm because of the factor -i)
+    print('TYTYTYTYTYTO')
     intor = mol._add_suffix('int2e_ig1')
     vj, vk = _vhf.direct_mapdm(intor,  # (g i,j|k,l)
                                'a4ij', ('lk->s1ij', 'jk->s1il'),
@@ -251,7 +257,7 @@ def solve_mo1(nmrobj, mo_energy=None, mo_coeff=None, mo_occ=None,
         print('#### mo_coeff.conj        :', np.shape(mo_coeff.conj()))        
         print('#### orbo                 :', np.shape(orbo))        
 
-        ### Compute (C_i+C_a)F^(1)C_i with C_i (M*M) 
+        ### Compute (C_i+C_a)F^(1)C_i
         ### with C_i (M*N) columns vector of unperturbed occ.        
         ### with C_a (M*(M-N)) columns vector of unperturbed unocc.
         ### with F^(1) (3*M*M) perturbed Fock matrix in 3 directions
@@ -264,7 +270,7 @@ def solve_mo1(nmrobj, mo_energy=None, mo_coeff=None, mo_occ=None,
         cput1 = log.timer('first order Fock matrix', *cput1)
         
     if s1 is None:
-        ### Compute (C_i+C_a)S^(1)C_i with C_i (M*M) 
+        ### Compute (C_i+C_a)S^(1)C_i
         ### with C_i (M*N) columns vector of occ.        
         ### with C_a (M*(M-N)) columns vector of unocc.
         ### with S^(1) (3*M*M) perturbed overlap matrix in 3 directions  
@@ -276,7 +282,9 @@ def solve_mo1(nmrobj, mo_energy=None, mo_coeff=None, mo_occ=None,
         if callable(with_cphf):
             vind = with_cphf
         else:
+            print('(0)-gen_vind')
             vind = gen_vind(nmrobj._scf, mo_coeff, mo_occ)
+        print('### np.shape(s1) :', np.shape(s1))     
         mo10, mo_e10 = cphf.solve(vind, mo_energy, mo_occ, h1, s1,
                                   nmrobj.max_cycle_cphf, nmrobj.conv_tol,
                                   verbose=log)
@@ -323,12 +331,46 @@ def gen_vind(mf, mo_coeff, mo_occ):
     nocc = orbo.shape[1]
     nao, nmo = mo_coeff.shape
     def vind(mo1):
+        print('(1)-vind is called')
         dm1 = [reduce(numpy.dot, (mo_coeff, x*2, orbo.T.conj()))
                for x in mo1.reshape(-1,nmo,nocc)]
+        print('shape(dm1) =', np.shape(dm1))
+        np.set_printoptions(precision=3)
+        print(dm1[0])
         dm1 = numpy.asarray([d1-d1.conj().T for d1 in dm1])
         v1mo = lib.einsum('xpq,pi,qj->xij', vresp(dm1), mo_coeff.conj(), orbo)
         return v1mo.ravel()
     return vind
+
+
+def gen_vind_dm(mf, mo_coeff, mo_occ):
+    '''Induced potential'''
+    vresp = mf.gen_response(singlet=True, hermi=2)
+    print('vresp', vresp)
+    occidx = mo_occ > 0
+    orbo = mo_coeff[:,occidx]
+    nocc = orbo.shape[1]
+    nao, nmo = mo_coeff.shape
+    def vind_dm(dm1):
+        print('(1)-vind_dm is called')
+        v1dm = lib.einsum('xpq,pi,qj->xij', vresp(dm1), mo_coeff.conj(), orbo)
+        return v1dm.ravel()
+    return vind_dm
+
+
+
+def gen_vind_ao(mf, mo_coeff, mo_occ):
+    '''Induced potential'''
+    vresp = mf.gen_response(singlet=True, hermi=2)
+    print('vresp', vresp)
+    occidx = mo_occ > 0
+    orbo = mo_coeff[:,occidx]
+    nocc = orbo.shape[1]
+    nao, nmo = mo_coeff.shape
+    def vind_ao(dm1):
+        print('(1)-vind_ao is called')
+        return vresp(dm1)
+    return vind_ao
 
 
 class NMR(lib.StreamObject):
