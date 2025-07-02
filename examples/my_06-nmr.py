@@ -21,7 +21,8 @@ from pyscf.lib import logger
 
 mol = gto.M(atom='''
             C 0 0 0
-            O 0 0 1.1747            
+            O 0 0 1.1747
+            C 0 1 0
             ''',
             basis='sto-3G', verbose=20)
 
@@ -31,24 +32,20 @@ N = int(mol.tot_electrons()/2) # only for RHF
 print('### M (basis set size), Ne (nb. of electrons), N (nb. of occupied states)')
 print(M,Ne,N)
 
-##########################################################
-# C \in R^{(M\times M)} = unperturbed matrix of MO coeff.
-##############################  ############################
 mf = scf.RHF(mol)
 conv, e_tot, eigs, C, theta = scf.hf_dm.kernel(mf,conv_tol=1e-8)
 #conv, e_tot, eigs, C, theta = scf.hf.kernel(mf,conv_tol=1e-8)
 
-##########################################################
-# Build F^{(0)} \in R^{(M\times M)} (AO basis)
-##########################################################
-#F = mf.get_fock()
+print('###############################################################################')
+print('# Build F^{(0)} \in R^{(M\times M)} (AO basis)')
+print('###############################################################################')
 mf.scf()
 F = mf.get_fock()
 print('np.shape(F^{(0)}) =', np.shape(F), M)
 
-##########################################################
-# C \in R^{(M\times M)} = unperturbed matrix of MO coeff.
-##########################################################
+print('###############################################################################')
+print('C \in R^{(M\times M)} = unperturbed matrix of MO coeff.')
+print('###############################################################################')
 print('np.shape(C) =', np.shape(C), M)
 
 ##########################################################
@@ -547,37 +544,62 @@ def solve_withs1_(fvind, mo_energy, mo_occ, h1, s1,
     t0 = (logger.process_clock(), logger.perf_counter())
 
     occidx = mo_occ > 0
-    print(occidx)
+    print('occidx', occidx)
     viridx = mo_occ == 0
-    print(viridx)
+    print('viridx', viridx)
 
+    # e_a in R^{virt}
     e_a = mo_energy[viridx]
+    print('e_a =', e_a)
+    # e_i = R^{occ}
     e_i = mo_energy[occidx]
+    # e_ai = e_a e_i^t in R^{occ x virt}
+    print('e_i =', e_i)
     e_ai = 1 / (e_a[:,None] + level_shift - e_i)
-    print(np.shape(e_ai))
+    print('np.shape(e_ai)',np.shape(e_ai))
+    print('e_ai =')
+    print(e_ai)
+    
     nvir, nocc = e_ai.shape
     nmo = nocc + nvir
 
-    print('######### solve_withs1')
+    print('######### solve_withs1 ####################################')
     print('# solve_withs1')
-    print('######### solve_withs1')
-
-    print(np.shape(s1),nmo,nocc)
-    s1 = s1.reshape(-1,nmo,nocc)
-    print(np.shape(s1),nmo,nocc)
-
-    hs = mo1base = h1.reshape(-1,nmo,nocc) - s1*e_i
-    print(np.shape(hs),nmo,nocc)
-
+    print('######### solve_withs1 ####################################')
+    print('s1')
     print(s1)
-    print(s1*e_i)
+
+    print('np.shape(s1),nmo,nocc',np.shape(s1),nmo,nocc)
+    s1 = s1.reshape(-1,nmo,nocc)
+    print('np.shape(s1),nmo,nocc',np.shape(s1),nmo,nocc)
+
+    print('s1')
+    print(s1)
+
+    print('np.shape(h1),nmo,nocc',np.shape(h1),nmo,nocc)
+    #hs = C^{\dagger} H1 C_occ - C^{\dagger} S1 C_occ*e_i
+    hs = mo1base = h1.reshape(-1,nmo,nocc) - s1*e_i
+    print('np.shape(hs),nmo,nocc',np.shape(hs),nmo,nocc)
 
     mo1base = hs.copy()
-    mo1base[:,viridx] *= -e_ai
-    print(np.shape(mo1base[:,viridx]),nmo,nocc)
-
-    mo1base[:,occidx] = -s1[:,occidx] * .5
+    print('np.shape(mo1base),nmo,nocc',np.shape(mo1base),nmo,nocc)
+    print('np.shape(mo1base[:,viridx]),nmo,nocc',np.shape(mo1base[:,viridx]),nmo,nocc)
+    
+    #hs_ai = -(C^{\dagger}_virt_a H1 C_occ_i - C^{\dagger}_a S1 C_occ_i*e_i)/(e_a - e_i)
+    mo1base[:,viridx,:] *= -e_ai   
+    print('mo1base')
+    print(mo1base[0])
+    #hs_ii = -(C^{\dagger}_occ_i S1 C_occ_i 
+    mo1base[:,occidx,:] = -s1[:,occidx,:] * .5
+    print('np.shape(mo1base[:,occidx]),nmo,nocc',np.shape(mo1base[:,occidx]),nmo,nocc)
     print(np.shape(mo1base[:,occidx]),nmo,nocc)
+    print('mo1base')
+    print(mo1base[0])
+    
+    print('s1[:,occidx]')
+    print(-s1[:,occidx] * .5)
+    print('s1')
+    print(-s1 * .5)
 
     def vind_vo(mo1):
         mo1 = mo1.reshape(-1, nmo, nocc)
@@ -587,11 +609,19 @@ def solve_withs1_(fvind, mo_energy, mo_occ, h1, s1,
         v[:,viridx,:] *= e_ai
         v[:,occidx,:] = 0
         return v.reshape(-1, nmo*nocc)
+    
+    print('######### lib.krylov in  ####################################')
     mo1 = lib.krylov(vind_vo, mo1base.reshape(-1, nmo*nocc),
                      tol=tol, max_cycle=max_cycle, hermi=hermi, verbose=log)
+    print('######### lib.krylov out ####################################')
     
     mo1 = mo1.reshape(-1, nmo, nocc)
+    print('mo1[:,occidx]')
+    print(mo1[:,occidx])
+
     mo1[:,occidx] = mo1base[:,occidx]
+    print(mo1[:,occidx])
+
     log.timer('krylov solver in CPHF', *t0)
 
     hs += fvind(mo1).reshape(-1, nmo, nocc)
@@ -607,6 +637,13 @@ def solve_withs1_(fvind, mo_energy, mo_occ, h1, s1,
     else:
         assert h1.ndim == 2
         return mo1[0], mo_e1[0]
+
+print('s1 input')
+print(s1)
+
+
+# s1 = C^{\dagger} S1 C_occ
+# h1 = C^{\dagger} S1 C_occ
 
 mo1_, mo_e1_ = solve_withs1_(fvind, mo_energy=mo_energy, mo_occ=mo_occ, h1=h1, s1=s1,
              max_cycle=50, tol=1e-9, hermi=False, verbose=logger.WARN,
