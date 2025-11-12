@@ -1,11 +1,14 @@
 import sys
+import os
 import pyscf
 from pyscf import gto, scf
 from pyscf import lib
 import numpy
 import importlib.util
 print(importlib.util.find_spec('pyscf'))
+os.environ["PYSCF_EXT_PATH"] = "/Users/lioneltruflandier/pyscf-on/properties-on"
 from pyscf.prop.nmr.rhf_dm import NMR
+
 
 
 # Directory containing molecule xyz files
