@@ -39,6 +39,7 @@ from scipy.sparse.linalg  import cg, gmres
 from scipy.sparse import csc_matrix
 from sksparse.cholmod import cholesky
 from pyscf.prop.nmr.utils import inv, diis, build_ab, build_q, gershgorin_max, gershgorin_min
+from pyscf.prop.nmr.huckel import get_system, dummy_F1_S1, overlap
 import time
 
 def dia(nmrobj, gauge_orig=None, shielding_nuc=None, dm0=None):
@@ -471,18 +472,22 @@ def solve_dm10_sylvester(nmrobj, mo_coeff=None, mo_occ=None,
     mol = nmrobj.mol
     #if mo_coeff is None: mo_coeff = nmrobj._scf.mo_coeff
     #if mo_occ is None: mo_occ = nmrobj._scf.mo_occ
-    if dm0 is None: dm0 = nmrobj._scf.init_guess_by_huckel(mol) #nmrobj._scf.make_rdm1(mo_coeff, mo_occ)
-    if h1 is None: h1 = make_h10(mol, dm0, gauge_orig=nmrobj.gauge_orig)
-    if s1 is None: s1 = make_s10(mol, gauge_orig=nmrobj.gauge_orig) # numpy.eye((h1.shape[1])) 
+    #if dm0 is None: dm0 = nmrobj._scf.init_guess_by_huckel(mol) #nmrobj._scf.make_rdm1(mo_coeff, mo_occ)
+    #if h1 is None: h1 = make_h10(mol, dm0, gauge_orig=nmrobj.gauge_orig)
+    #if s1 is None: s1 = make_s10(mol, gauge_orig=nmrobj.gauge_orig) # numpy.eye((h1.shape[1])) 
     if with_cphf is None: with_cphf = nmrobj.cphf
         
-    S0 = mol.intor('int1e_ovlp') # numpy.eye((h1.shape[1]))
-    Sinv = numpy.linalg.inv(S0) #inv(S0) 
-    h1e = mol.intor("int1e_kin") + mol.intor("int1e_nuc")
-    vhf = hf.get_veff(mol, dm0)
-    F0 = h1e + vhf
+    F0, S0, D0, N = get_system(10, 10)
+    #S0 = overlap(10)
+    h1, s1 = dummy_F1_S1(F0)
+    Sinv = numpy.linalg.inv(S0)
+    # S0 = mol.intor('int1e_ovlp') # numpy.eye((h1.shape[1]))
+    # Sinv = numpy.linalg.inv(S0) #inv(S0) 
+    # h1e = mol.intor("int1e_kin") + mol.intor("int1e_nuc")
+    # vhf = hf.get_veff(mol, dm0)
+    # F0 = h1e + vhf
     #F0 = nmrobj._scf.get_fock(dm=dm0)
-    D0 = .5 * dm0
+    # D0 = .5 * dm0
     ######### property check ##############
     print("Cond number of S:", numpy.linalg.cond(S0))
 
@@ -637,25 +642,28 @@ def hpcp_dmpt(F0, F1, S0, S1, Sinv, N,
 
 def purification_first_order(nmrobj, method='tc2', max_cycle=2000, tol=1e-8, with_cphf=None):
     
-    from pyscf.scf import hf
+    #from pyscf.scf import hf
     if with_cphf is None: with_cphf = nmrobj.cphf
-    mol = nmrobj.mol
+    #mol = nmrobj.mol
     #F0 = nmrobj._scf.get_fock()
     #mo_occ = nmrobj._scf.mo_occ
-    N = mol.nelectron #numpy.sum(mo_occ > 0)
-    dm0 = nmrobj._scf.init_guess_by_huckel(mol) #dm0 = nmrobj._scf.make_rdm1()
-    F1 = make_h10(mol, dm0, gauge_orig=nmrobj.gauge_orig)
-    S1 = make_s10(mol, gauge_orig=nmrobj.gauge_orig) # numpy.eye((F1.shape[1])) 
-    h1e = mol.intor("int1e_kin") + mol.intor("int1e_nuc")
-    vhf = hf.get_veff(mol, dm0)
-    F0 = h1e + vhf
-    S0 =  mol.intor("int1e_ovlp") # numpy.eye((S1.shape[1]))
+    #N = mol.nelectron #numpy.sum(mo_occ > 0)
+    #dm0 = nmrobj._scf.init_guess_by_huckel(mol) #dm0 = nmrobj._scf.make_rdm1()
+    #F1 = make_h10(mol, dm0, gauge_orig=nmrobj.gauge_orig)
+    #S1 = make_s10(mol, gauge_orig=nmrobj.gauge_orig) # numpy.eye((F1.shape[1])) 
+    #h1e = mol.intor("int1e_kin") + mol.intor("int1e_nuc")
+    #vhf = hf.get_veff(mol, dm0)
+    #F0 = h1e + vhf
+    #S0 =  mol.intor("int1e_ovlp") # numpy.eye((S1.shape[1]))
+    F0, S0, D0, N = get_system(10, 10)
+    #S0 = overlap(10)
+    F1, S1 = dummy_F1_S1(F0)
     Sinv = numpy.linalg.inv(S0)
     emax = gershgorin_max(Sinv @ F0)
     emin = gershgorin_min(Sinv @ F0)
         
     D1 = numpy.zeros_like(S1)
-    D0 = .5 * dm0
+    #D0 = .5 * dm0
     print("Cond number of S:", numpy.linalg.cond(S0))
     
     if ( method == 'tc2' ):
@@ -1162,19 +1170,19 @@ nmr.cphf = False
 nmr.gauge_orig = None
 
 _, D1_tc2 = purification_first_order(nmr, method='tc2')
-#_, D1_hpcp = purification_first_order(nmr, method='hpcp')
+_, D1_hpcp = purification_first_order(nmr, method='hpcp')
 
 D1_syl = solve_dm10_sylvester(nmr)
 #D1_mcw, _, _, _ = solve_dm10_mcweeny(nmr)
 
-print('Norm of the density matrix D1_syl:', np.linalg.norm(D1_syl))
+print('Norm of the density matrix D1_hpcp:', np.linalg.norm(D1_hpcp))
 print('Norm of the density matrix D1_tc2:', np.linalg.norm(D1_tc2))
 
 
-test_D1 = D1_tc2 - D1_syl
-print('Comparing D1_tc2 with D1_syl:', np.linalg.norm(test_D1.reshape(-1, test_D1.shape[-1]), ord='fro'))
-# test_D1 = D1_hpcp - D1_syl
-# print('Comparing D1_hpcp with D1_syl:', np.linalg.norm(test_D1.reshape(-1, test_D1.shape[-1]), ord='fro'))
+test_D1 = D1_tc2 - D1_hpcp
+print('Comparing D1_tc2 with D1_hpcp:', np.linalg.norm(test_D1.reshape(-1, test_D1.shape[-1]), ord='fro'))
+test_D1 = D1_hpcp - D1_syl
+print('Comparing D1_hpcp with D1_syl:', np.linalg.norm(test_D1.reshape(-1, test_D1.shape[-1]), ord='fro'))
 # test_D1 = D1_syl - D1_mcw
 # print('Comparing D1_syl with D1_mcw:', np.linalg.norm(test_D1.reshape(-1, test_D1.shape[-1]), ord='fro'))
 
