@@ -8,7 +8,44 @@ Created on Wed Apr 23 16:15:11 2025
 
 import numpy
 
-def diis(F_list, e_list, max_diis):
+def inv(S):
+    
+    '''Calculates the inverse of a matrix using eigen decomposition: 
+         S = U @ A @ U.T ; A is a diagonal matrix of eigen values of S
+    '''
+    if S.ndim == 2:
+        
+        A, U = numpy.linalg.eigh(S)    
+        A_inv = 1.0 / A
+        S_inv = U @ numpy.diag(A_inv) @ U.T
+    
+    elif S.ndim == 3:
+        
+        Npert, M, _ = S.shape 
+        S_inv = numpy.zeros_like(S)
+    
+        for n in range(Npert):    
+            A, U = numpy.linalg.eigh(S[n])    
+            A_inv = 1.0 / A
+            S_inv[n] = U @ numpy.diag(A_inv) @ U.T
+    else:
+        raise ValueError("Matrix must be 2D (M, M) or 3D (n, M, M)")
+    return S_inv
+
+def inv_cho(S):
+    
+    '''Calculates the inverse of a matrix using Cholesky decomposition:
+        S = L @ L.T ; S is a square matrix (M, M)
+    '''
+    from scipy.linalg import solve_triangular
+    
+    L = numpy.linalg.cholesky(S)  
+    I = numpy.eye((S.shape[0]))                    
+    X = solve_triangular(L, I, lower=True)        # solve L X = I
+    Sinv = solve_triangular(L.T, X, lower=False)  # solve L.T Sinv = X
+    return Sinv
+
+def diis(F_list, e_list, max_diis=6):
     """
     Perform DIIS to get a new 2D Fock matrix
     """
@@ -24,8 +61,11 @@ def diis(F_list, e_list, max_diis):
     B_matrix[-1, -1] = 0
 
     for i in range(len(F_list)):
-        for j in range(len(F_list)):
-            B_matrix[i, j] = numpy.sum(e_list[i] * e_list[j])
+        for j in range(i+1):
+            val = numpy.sum(e_list[i] * e_list[j])
+            B_matrix[i, j] = val
+            B_matrix[j, i] = val
+            #B_matrix[i, j] = numpy.sum(e_list[i] * e_list[j])
 
     rhs = numpy.zeros((B_dim))
     rhs[-1] = -1
@@ -51,7 +91,8 @@ def build_ab(S0, Sinv, F0, D0):
     I = numpy.eye(D0.shape[0])
 
     A = Sinv @ (I - 2 * S0 @ D0) @ F0
-    B = F0 @ (I - 2 * D0 @ S0) @ Sinv
+    #B = F0 @ (I - 2 * D0 @ S0) @ Sinv
+    B = A.T
     
     return A, B
     
@@ -86,4 +127,5 @@ def gershgorin_min(W):
                 sum = sum + abs(W[i,j])                
         v[i] = W[i,i] - sum   
     return v.min()
+
 

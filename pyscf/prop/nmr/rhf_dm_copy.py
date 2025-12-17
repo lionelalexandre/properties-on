@@ -38,7 +38,7 @@ from scipy import linalg
 from scipy.sparse.linalg  import cg, gmres
 from scipy.sparse import csc_matrix
 from sksparse.cholmod import cholesky
-from pyscf.prop.nmr.utils import diis, build_ab, build_q, gershgorin_max, gershgorin_min
+from pyscf.prop.nmr.utils import inv, diis, build_ab, build_q, gershgorin_max, gershgorin_min
 import time
 
 def dia(nmrobj, gauge_orig=None, shielding_nuc=None, dm0=None):
@@ -340,14 +340,14 @@ def solve_dm10_mcweeny(nmrobj, mo_coeff=None, mo_occ=None, mo_energy=None,
         Co, Cv = mo_coeff[:, occidx], mo_coeff[:, viridx]
         cart, M = s1.shape[0], s1.shape[1]
         D0 = .5*dm0
-        S0 = mol.intor('int1e_ovlp') 
-        F0 = nmrobj._scf.get_fock(dm=dm0)
+        S0 = mol.intor('int1e_ovlp')
+        F0 = nmrobj._scf.get_fock()
         Doo = -.5* (D0 @ s1) @ D0
         
         vresp = nmrobj._scf.gen_response(singlet=True, hermi=2)
         
-        max_cycle = 20
-        conv_tol = 1e-9
+        max_cycle = 2000
+        conv_tol = 1e-8
         D1 = numpy.zeros((cart, M, M))
         Dov = numpy.zeros_like(D1)
         for n in range(cart):
@@ -361,7 +361,7 @@ def solve_dm10_mcweeny(nmrobj, mo_coeff=None, mo_occ=None, mo_energy=None,
                 
                 diis_r = F1_n @ D0 @ S0 - S0 @ D0 @ F1_n \
                         + F0 @ D1_n @ S0 - S0 @ D1_n @ F0 \
-                        + F0 @ D0 @ s1[n] - s1[n] @ D0 @ F0 \
+                        + F0 @ D0 @ s1[n] - s1[n] @ D0 @ F0 
                                                                         
                 F_list.append(F1_n)
                 e_list.append(diis_r)
@@ -389,12 +389,14 @@ def solve_dm10_mcweeny(nmrobj, mo_coeff=None, mo_occ=None, mo_energy=None,
                 
             D1[n] = D1_n
             Dov[n] = Dov_n
-                        
+            
+            #print(f"n: {n}, cycle: {cycle}, err = {err}, v1 = {numpy.linalg.norm(v1)}")
+            
     Dvo = - Dov.transpose(0,2,1)
     
     t1 = time.perf_counter()
     total_time = t1 - t0
-    print(f"time spent in MCW routine: {total_time}")
+    print(f"time spent in DM routine: {total_time}")
 
     return D1, Doo, Dov, Dvo
         
@@ -464,20 +466,31 @@ def solve_dm10_sylvester(nmrobj, mo_coeff=None, mo_occ=None,
         based on Sylvester-DMPT approach'''
         
     t0 = time.perf_counter()
-        
+    
+    from pyscf.scf import hf    
     mol = nmrobj.mol
-    if mo_coeff is None: mo_coeff = nmrobj._scf.mo_coeff
-    if mo_occ is None: mo_occ = nmrobj._scf.mo_occ
-    if dm0 is None: dm0 = nmrobj._scf.make_rdm1(mo_coeff, mo_occ)
+    #if mo_coeff is None: mo_coeff = nmrobj._scf.mo_coeff
+    #if mo_occ is None: mo_occ = nmrobj._scf.mo_occ
+    if dm0 is None: dm0 = nmrobj._scf.init_guess_by_huckel(mol) #nmrobj._scf.make_rdm1(mo_coeff, mo_occ)
     if h1 is None: h1 = make_h10(mol, dm0, gauge_orig=nmrobj.gauge_orig)
-    if s1 is None: s1 = make_s10(mol, gauge_orig=nmrobj.gauge_orig)
+    if s1 is None: s1 = make_s10(mol, gauge_orig=nmrobj.gauge_orig) # numpy.eye((h1.shape[1])) 
     if with_cphf is None: with_cphf = nmrobj.cphf
         
-    S0 = mol.intor('int1e_ovlp') 
-    Sinv = numpy.linalg.inv(S0) 
-    F0 = nmrobj._scf.get_fock(dm=dm0)
+    S0 = mol.intor('int1e_ovlp') # numpy.eye((h1.shape[1]))
+    Sinv = numpy.linalg.inv(S0) #inv(S0) 
+    h1e = mol.intor("int1e_kin") + mol.intor("int1e_nuc")
+    vhf = hf.get_veff(mol, dm0)
+    F0 = h1e + vhf
+    #F0 = nmrobj._scf.get_fock(dm=dm0)
     D0 = .5 * dm0
-    
+    ######### property check ##############
+    print("Cond number of S:", numpy.linalg.cond(S0))
+
+    idem = D0 @ S0 @ D0 - D0
+    print("this is idempotent if it's True:", numpy.allclose(idem, numpy.zeros(idem.shape)))
+    trace = numpy.trace(D0 @ S0)
+    N = mol.nelectron
+    print("this is a correct trace if it's True:", numpy.allclose(trace, N/2), "trace:", trace, "number of occ:", N/2)
     if not with_cphf:
         D1 = solve_dm10_linear(S0, Sinv, F0, D0, s1, h1)
         t1 = time.perf_counter()
@@ -529,7 +542,7 @@ def solve_dm10_sylvester(nmrobj, mo_coeff=None, mo_occ=None,
             D1[n] = D1_n
     t1 = time.perf_counter()
     total_time = t1 - t0
-    print(f"time spent in SYL routine: {total_time}")
+    print(f"time spent in DM routine: {total_time}")
             
     return D1
 
@@ -567,6 +580,7 @@ def tc2_dmpt(F0, F1, S0, S1, Sinv, N,
         err1 = numpy.linalg.norm(D1 - D1_update)
 
         if err0 < tol and err1 < tol:
+            #print(f"TC2 DMPT converged at cycle {cycle}")
             break
         
         D0 = D0_update
@@ -613,6 +627,7 @@ def hpcp_dmpt(F0, F1, S0, S1, Sinv, N,
         err1 = numpy.linalg.norm(D1 - D1update)
         
         if err0 < tol and err1 < tol:
+            #print(f"CPHF-HPCP converged at inner cycle {cycle}: ")
             break
                 
         D0 = D0_update
@@ -622,23 +637,26 @@ def hpcp_dmpt(F0, F1, S0, S1, Sinv, N,
 
 def purification_first_order(nmrobj, method='tc2', max_cycle=2000, tol=1e-8, with_cphf=None):
     
-    t0 = time.perf_counter()
-    
+    from pyscf.scf import hf
     if with_cphf is None: with_cphf = nmrobj.cphf
     mol = nmrobj.mol
-    mo_occ = nmrobj._scf.mo_occ
-    N = numpy.sum(mo_occ > 0)
-    dm0 = nmrobj._scf.make_rdm1()
-    F0 = nmrobj._scf.get_fock(dm=dm0)
+    #F0 = nmrobj._scf.get_fock()
+    #mo_occ = nmrobj._scf.mo_occ
+    N = mol.nelectron #numpy.sum(mo_occ > 0)
+    dm0 = nmrobj._scf.init_guess_by_huckel(mol) #dm0 = nmrobj._scf.make_rdm1()
     F1 = make_h10(mol, dm0, gauge_orig=nmrobj.gauge_orig)
-    S1 = make_s10(mol, gauge_orig=nmrobj.gauge_orig)
-    S0 =  mol.intor("int1e_ovlp")
+    S1 = make_s10(mol, gauge_orig=nmrobj.gauge_orig) # numpy.eye((F1.shape[1])) 
+    h1e = mol.intor("int1e_kin") + mol.intor("int1e_nuc")
+    vhf = hf.get_veff(mol, dm0)
+    F0 = h1e + vhf
+    S0 =  mol.intor("int1e_ovlp") # numpy.eye((S1.shape[1]))
     Sinv = numpy.linalg.inv(S0)
     emax = gershgorin_max(Sinv @ F0)
     emin = gershgorin_min(Sinv @ F0)
         
     D1 = numpy.zeros_like(S1)
     D0 = .5 * dm0
+    print("Cond number of S:", numpy.linalg.cond(S0))
     
     if ( method == 'tc2' ):
 
@@ -667,6 +685,10 @@ def purification_first_order(nmrobj, method='tc2', max_cycle=2000, tol=1e-8, wit
                             + F0 @ D1[n] @ S0    - S0 @ D1[n] @ F0        
                             + df.T @ S1[n]   - S1[n] @ df)
 
+                # if (not numpy.isfinite(R).all()) or (not numpy.isfinite(F1_v).all()):
+                #     print(f"CPHF-TC2: non finite F or R at outer cycle {cphf_cycle}")
+                #     break
+
                 F_list.append(F1_v)
                 R_list.append(R)
 
@@ -678,8 +700,14 @@ def purification_first_order(nmrobj, method='tc2', max_cycle=2000, tol=1e-8, wit
                     max_cycle=max_cycle, tol=tol
                     )
 
+                # if (not numpy.isfinite(D0_new).all()) or (not numpy.isfinite(D1_new).all()):
+                #     print(f"CPHF-TC2: non finite D0/D1 at outer cycle {cphf_cycle}")
+                #     break
+
                 err1 = numpy.linalg.norm(D0_new - D0)
                 err2 = numpy.linalg.norm(D1_new - D1)  
+
+                # print(f"CPHF-TC2 outer cycle {cphf_cycle}: err = {err_cphf:.6e}")
 
                 if err1 < tol and err2 < tol:
                     print(f"CPHF-TC2 converged at outer cycle {cphf_cycle}")
@@ -721,6 +749,10 @@ def purification_first_order(nmrobj, method='tc2', max_cycle=2000, tol=1e-8, wit
                     R[n] = (F1_v[n] @ ds - ds.T @ F1_v[n]
                             + F0 @ D1[n] @ S0    - S0 @ D1[n] @ F0        
                             + df.T @ S1[n]   - S1[n] @ df)
+                    
+                    # if (not numpy.isfinite(R).all()) or (not numpy.isfinite(F1_v).all()):
+                    #     print(f"CPHF-HPCP: non finite F or R at outer cycle {cphf_cycle}")
+                    #     break
                         
                 F_list.append(F1_v.copy())
                 R_list.append(R.copy())
@@ -732,9 +764,15 @@ def purification_first_order(nmrobj, method='tc2', max_cycle=2000, tol=1e-8, wit
                         emax, emin,
                         max_cycle=max_cycle, tol=tol
                         )
+            
+                # if (not numpy.isfinite(D0_new).all()) or (not numpy.isfinite(D1_new).all()):
+                #     print(f"CPHF-HPCP: non finite D0/D1 at outer cycle {cphf_cycle}")
+                #     break
                 
                 err1 = numpy.linalg.norm(D0_new - D0)
                 err2 = numpy.linalg.norm(D1_new - D1)  
+                
+                #print(f"CPHF-HPCP outer cycle {cphf_cycle}: err1 = {err1:.6e}, err2 = {err2:.6e}")
                 
                 if err1 < tol and err2 < tol:
                     print(f"CPHF-HPCP converged at outer cycle {cphf_cycle}")
@@ -751,13 +789,124 @@ def purification_first_order(nmrobj, method='tc2', max_cycle=2000, tol=1e-8, wit
                 
     else:
         raise ValueError(f"Unknown method '{method}'. Choose from: 'tc2', 'hpcp'.")
-        
-    t1 = time.perf_counter()
-    total_time = t1 - t0
-    print(f"time spent in PRF routine: {total_time}")
            
     return D0, D1
+
+# def purification_first_order(nmrobj, method='tc2', max_cycle=50, tol=1e-9, with_cphf=None):
+
+#     mol = nmrobj.mol
+#     S0 = mol.intor("int1e_ovlp")
+#     F0 = nmrobj._scf.get_fock()
+#     mo_occ = nmrobj._scf.mo_occ
+#     N = numpy.sum(mo_occ > 0)
+#     S1 = make_s10(nmrobj.mol, gauge_orig=nmrobj.gauge_orig)
+#     dm0 = nmrobj._scf.make_rdm1()
+#     F1 = make_h10(nmrobj.mol, dm0, gauge_orig=nmrobj.gauge_orig)
+#     I = numpy.eye(S0.shape[0], dtype=S0.dtype)
+#     Sinv = numpy.linalg.inv(S0)
+#     emax = gershgorin_max(Sinv @ F0)
+#     emin = gershgorin_min(Sinv @ F0)
+    
+#     if with_cphf:
+#         vresp = nmrobj._scf.gen_response(singlet=True, hermi=2)
+    
+#     if ( method == 'tc2' ):
+
         
+#         D0 = ((emax * I - Sinv @ F0) @ Sinv) / (emax - emin)
+#         D1 = (- emax * Sinv @ S1 @ Sinv - Sinv @ ( F1 - S1 @ Sinv @ F0 - F0 @ Sinv @ S1 ) @ Sinv )  / (emax - emin)
+#         A = []
+#         B = []
+#         for cycle in range(max_cycle):
+
+#             trace_DS = numpy.trace(D0 @ S0)
+#             delta_N = N - trace_DS
+            
+#             if delta_N > 0:
+#                 theta = 1
+#             else:
+#                 theta = 0
+            
+#             alpha = 2 * (theta - 0.5)
+                
+#             D0_update = D0 + alpha * (D0 - D0 @ S0 @ D0)
+                
+#             D1update = D1 + alpha * ( D1 - (D1 @ S0 @ D0 \
+#                                                       + D0 @ S1 @ D0 \
+#                                                           + D0 @ S0 @ D1 ) )
+                    
+#             err0 = numpy.linalg.norm(D0 - D0_update)
+                
+#             err1 = numpy.linalg.norm(D1 - D1update)
+        
+#             if err0 < tol and err1 < tol:
+#                 print(f"Converged at cycle {cycle}: ")
+#                 break
+                
+#             D0 = D0_update
+#             D1 = D1update
+            
+#             a = numpy.linalg.norm(D1.transpose(0,2,1)@ S0 + S0 @ D1)
+#             print(a)
+#             A.append(a)   #A ANTISYMMETRY
+                
+#             b = numpy.sum(numpy.trace(D1 @ S0, axis1=1, axis2=2) + numpy.trace(D0 @ S1, axis1=1, axis2=2))
+#             B.append(b)   #B TRACE  (added S in my trace for correctness and visuality)
+            
+#     elif ( method == 'hpcp' ):
+        
+#         M = F0.shape[0]
+#         theta = N/M
+#         mu = numpy.trace(Sinv @ F0) / M     
+#         beta1 = theta
+#         beta2 = min( theta/(emax-mu), (1-theta)/(mu-emin) )
+#         sss = Sinv @ S1 @ Sinv
+#         sfs = Sinv @ F0 @ Sinv
+       
+#         D0 = beta1 * Sinv + beta2 * ( mu * Sinv - sfs )
+#         D1 = - beta1 * sss + beta2 * (- mu * sss - Sinv @ F1 @ Sinv + sss @ F0 @ Sinv + Sinv @ F0 @ sss)
+#         A = []
+#         B = []
+#         for cycle in range(max_cycle): 
+           
+#             ds = D0 @ S0
+#             dsd = ds @ D0
+#             dsdsd = dsd @ S0 @ D0
+#             c = numpy.trace( (dsd  - dsdsd) @ S0 ) / numpy.trace(ds - dsd @ S0)
+               
+#             D0_update = (1 - 2*c) * D0 + 2*(1 + c) * dsd - 2*dsdsd
+              
+#             D1update = (1 - 2*c) * D1 \
+#                + 2*(1 + c) * (D1 @ S0 @ D0 \
+#                             + D0 @ S1 @ D0 \
+#                             + D0 @ S0 @ D1) \
+#                        - 2 * (D1 @ S0 @ dsd \
+#                             + D0 @ S1 @ dsd \
+#                             + ds @ D1 @ S0 @ D0 \
+#                             + dsd @ S1 @ D0 \
+#                             + dsd @ S0 @ D1)
+                                
+#             err0 = numpy.linalg.norm(D0 - D0_update)
+                
+#             err1 = numpy.linalg.norm(D1 - D1update)
+        
+#             if err0 < tol and err1 < tol:
+#                 print(f"Converged at cycle {cycle}: ")
+#                 break
+                
+#             D0 = D0_update
+#             D1 = D1update
+            
+#             a = numpy.linalg.norm(D1.transpose(0,2,1) + D1)
+#             A.append(a)
+            
+#             b = numpy.sum(numpy.trace(D1 @ S0, axis1=1, axis2=2) + numpy.trace(D0 @ S1, axis1=1, axis2=2))
+#             B.append(b)
+            
+#     else:
+#         raise ValueError(f"Unknown method '{method}'. Choose from: 'tc2', 'hpcp'.")
+           
+#     return D0, D1, A, B
 
 def get_fock(nmrobj, dm0=None, gauge_orig=None):
     r'''First order partial derivatives of Fock matrix wrt external magnetic
@@ -967,3 +1116,98 @@ if __name__ == '__main__':
     print(lib.finger(msc) - -123.98600632099961)
     
 
+
+from pyscf import gto, scf
+from pyscf.prop.nmr.rhf_dm import NMR
+import matplotlib.pyplot as plt
+import numpy as np
+from pyscf.data import nist
+nist.ALPHA = 1./137.03599967994
+
+mol = gto.Mole()
+mol.verbose = 1
+# mol.atom = [
+#     ["C", (-2.10, 0.00, 0.00)],
+#     ["H", (-2.70, 0.92, 0.00)],
+#     ["H", (-2.70, -0.92, 0.00)],
+#     ["C", (-0.70, 0.00, 0.00)],
+#     ["H", (-0.10, 0.92, 0.00)],
+#     ["C", (0.70, 0.00, 0.00)],
+#     ["H", (1.30, -0.92, 0.00)],
+#     ["C", (2.10, 0.00, 0.00)],
+#     ["H", (2.70, 0.92, 0.00)],
+#     ["H", (2.70, -0.92, 0.00)],
+# ]
+# mol.basis = {
+#     "C": '6-31g',
+#     "H": '6-31g',
+# }
+# mol.build()
+
+mol.atom = [
+    [1   , (0. , 0. , .917)],
+    ["F" , (0. , 0. , 0.)], ]
+mol.basis = {"H": 'cc_pvdz',
+             "F": 'cc_pvdz',}
+mol.build()
+
+
+mf = scf.RHF(mol)
+# mf.conv_tol_grad = 1e-10  ############ KEEP VERY HIGH !! IMPORTANT !! ######################
+# mf.conv_tol = 1e-14
+# mf.scf()
+
+nmr = NMR(mf)
+nmr.cphf = False
+nmr.gauge_orig = None
+
+_, D1_tc2 = purification_first_order(nmr, method='tc2')
+#_, D1_hpcp = purification_first_order(nmr, method='hpcp')
+
+D1_syl = solve_dm10_sylvester(nmr)
+#D1_mcw, _, _, _ = solve_dm10_mcweeny(nmr)
+
+print('Norm of the density matrix D1_syl:', np.linalg.norm(D1_syl))
+print('Norm of the density matrix D1_tc2:', np.linalg.norm(D1_tc2))
+
+
+test_D1 = D1_tc2 - D1_syl
+print('Comparing D1_tc2 with D1_syl:', np.linalg.norm(test_D1.reshape(-1, test_D1.shape[-1]), ord='fro'))
+# test_D1 = D1_hpcp - D1_syl
+# print('Comparing D1_hpcp with D1_syl:', np.linalg.norm(test_D1.reshape(-1, test_D1.shape[-1]), ord='fro'))
+# test_D1 = D1_syl - D1_mcw
+# print('Comparing D1_syl with D1_mcw:', np.linalg.norm(test_D1.reshape(-1, test_D1.shape[-1]), ord='fro'))
+
+
+# msc_para = para_dm(nmr, method='tc2')
+# msc_para_m10, _, _ = para(nmr)
+# frobenius_diff = np.linalg.norm(msc_para - msc_para_m10)
+# print("Frobenius difference:", frobenius_diff)
+
+# s0 = mol.intor("int1e_ovlp")
+# A_tc2 = np.array(A_tc2)
+# B_tc2 = np.array(B_tc2)
+# A_hpcp = np.array(A_hpcp)
+# B_hpcp = np.array(B_hpcp)
+
+# iterations_TC2 = np.arange(len(A_tc2))
+# iterations_HPCP = np.arange(len(A_hpcp))
+
+
+# plt.figure(figsize=(6.4, 4.8) )
+# plt.plot(iterations_TC2, A_tc2, marker='o', label='TC2')
+# plt.plot(iterations_HPCP, A_hpcp, marker='s', label='HPCP')
+# plt.xlabel("Iteration")
+# plt.ylabel("Trace Deviation")
+# plt.legend()
+# plt.tight_layout()
+# plt.savefig("trace_comparison.png")
+
+# plt.figure(figsize=(6.4, 4.8) )
+# plt.plot(iterations_TC2, B_tc2, marker='o', label='TC2')
+# plt.plot(iterations_HPCP, B_hpcp, marker='s', label='HPCP')
+# plt.xlabel("Iteration")
+# plt.ylabel("Antisymmetry Norm")
+# plt.legend()
+# plt.tight_layout()
+# plt.savefig("antisymmetry_comparison.png")

@@ -7,6 +7,13 @@ import importlib.util
 print(importlib.util.find_spec('pyscf'))
 from pyscf.prop.nmr.rhf_dm import NMR
 
+import psutil
+import time
+
+def log_usage(tag=""):
+    process = psutil.Process()
+    mem = process.memory_info().rss / (1024 ** 2)  # MB
+    print(f"[{tag}] Memory usage: {mem:.2f} MB")
 
 # Directory containing molecule xyz files
 molecules_dir = 'xyz'
@@ -42,15 +49,36 @@ for mol_file in molecules:
     nmr.cphf = False
     nmr.gauge_orig = None
 
+    start = time.time()
+    log_usage("Before MO")
     msc = nmr.shielding()
+    log_usage("After MO")
+    print(f"[MO] Time: {time.time() - start:.2f} s")
 
+    start = time.time()
+    log_usage("Before MCW")
     msc_dm = nmr.shielding(method='mcw')
+    log_usage("After MCW")
+    print(f"[MCW] Time: {time.time() - start:.2f} s")
 
+    start = time.time()
+    log_usage("Before SLV")
     msc_s = nmr.shielding(method='slv')
+    log_usage("After SLV")
+    print(f"[SLV] Time: {time.time() - start:.2f} s")
 
+    start = time.time()
+    log_usage("Before TC2")
     msc_tc2 = nmr.shielding(method='tc2')
+    log_usage("After TC2")
+    print(f"[TC2] Time: {time.time() - start:.2f} s")
 
+    start = time.time()
+    log_usage("Before HPCP")
     msc_hpcp = nmr.shielding(method='hpcp')
+    log_usage("After HPCP")
+    print(f"[HPCP] Time: {time.time() - start:.2f} s")
+
 
     # print results
     test_D1 = msc - msc_dm
