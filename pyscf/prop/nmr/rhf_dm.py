@@ -22,7 +22,7 @@ Non-relativistic NMR shielding tensor
 #LAT: to delete
 import os
 os.environ["PYSCF_EXT_PATH"] = "/Users/lioneltruflandier/pyscf-on/properties-on"
-
+import matplotlib.pyplot as plt
 '''
 #LAT: Identification of terms wrt. to Wolinski J. Am. Chem. Soc., Vol. 112, No. 23, 1990
 '''
@@ -348,8 +348,9 @@ def solve_dm10_mcweeny(nmrobj, mo_coeff=None, mo_occ=None, mo_energy=None,
         Doo = -.5* (D0 @ s1) @ D0
         
         vresp = nmrobj._scf.gen_response(singlet=True, hermi=2)
-        
+        #LAT: put max_cycle as an argument
         max_cycle = 20
+        #LAT: put conv_tol as an argument
         conv_tol = 1e-9
         D1 = numpy.zeros((cart, M, M))
         Dov = numpy.zeros_like(D1)
@@ -368,7 +369,7 @@ def solve_dm10_mcweeny(nmrobj, mo_coeff=None, mo_occ=None, mo_energy=None,
                                                                         
                 F_list.append(F1_n)
                 e_list.append(diis_r)
-                
+                #LAT: put max_diis as an argument
                 F1_n = diis(F_list, e_list, max_diis=6)
 
                 Dov_update = numpy.zeros_like(Dov_n)
@@ -462,7 +463,7 @@ def solve_dm10_linear(S0, Sinv, F0, D0, S1, F1, method='slv'):
 
 
 def solve_dm10_sylvester(nmrobj, mo_coeff=None, mo_occ=None,
-                         dm0=None, h1=None, s1=None, with_cphf=None, conv_tol=1e-12):
+                         dm0=None, h1=None, s1=None, with_cphf=None):
     '''Build first-order density matrix in AO basis
         based on Sylvester-DMPT approach'''
         
@@ -493,9 +494,9 @@ def solve_dm10_sylvester(nmrobj, mo_coeff=None, mo_occ=None,
         vresp = nmrobj._scf.gen_response(singlet=True, hermi=2)
         
         A, B = build_ab(S0, Sinv, F0, D0)
-        
+        #LAT: max_cycle and conv_tol as an argument
         max_cycle = 2000
-        #conv_tol = 1e-8
+        conv_tol = 1e-8
         D1 = numpy.zeros_like(s1)
         for n in range(s1.shape[0]):
             S1_n = s1[n]
@@ -514,7 +515,7 @@ def solve_dm10_sylvester(nmrobj, mo_coeff=None, mo_occ=None,
                                                                         
                 F_list.append(F1_n)
                 e_list.append(diis_r)
-                
+                #LAT: no max_diis here ?
                 F1_n = diis(F_list, e_list)
                     
                 Q_n = build_q(Sinv, F0, D0, S1_n, F1_n)  
@@ -620,11 +621,18 @@ def hpcp_dmpt(F0, F1, S0, S1, Sinv, N,
                 
         D0 = D0_update
         D1 = D1update
+
+        #D1[0] = (D1[0] - D1[0].T)/2
+        #D1[1] = (D1[1] - D1[1].T)/2
+        #D1[2] = (D1[2] - D1[2].T)/2
+        
         
     return D0, D1
 
-def purification_first_order(nmrobj, method='tc2', max_cycle=2000, tol=1e-10, with_cphf=None):
+def purification_first_order(nmrobj, method='tc2', max_cycle=2000, tol=1e-8, with_cphf=None):
     
+    #LAT: can we have F1, S1, F0, S0, Sinv in arguments ?
+    #LAT: it seems we need D0 before computing with purification (for DIIS) is it mandatory ?
     t0 = time.perf_counter()
     
     if with_cphf is None: with_cphf = nmrobj.cphf
@@ -863,6 +871,34 @@ class NMR(lib.StreamObject):
                 self.dm10 = self.purification_first_order(method='hpcp')[1]
                 dm1 = self.dm10
             msc_para = self.para_dm(method = 'hpcp', dm10=dm1)
+
+        elif ( method == 'all'):
+            if dm1 is None:
+                self.dm10 = self.solve_dm10_mcweeny()[0]
+                dm1_mcw = self.dm10
+                self.dm10 = self.solve_dm10_sylvester()
+                dm1_slv = self.dm10
+                self.dm10 = self.purification_first_order(method='hpcp')[1]
+                dm1_hpcp = self.dm10
+                self.dm10 = self.purification_first_order(method='tc2')[1]
+                dm1_tc2 = self.dm10
+                print('############test dm1:')
+                test = dm1_slv[0]+dm1_slv[0].T + dm1_slv[1]+dm1_slv[1].T + dm1_slv[2]+dm1_slv[2].T
+                print('slv',numpy.linalg.norm(dm1_mcw-dm1_slv),numpy.linalg.norm(test.reshape(-1, test.shape[-1])))
+                test = dm1_tc2[0]+dm1_tc2[0].T + dm1_tc2[1]+dm1_tc2[1].T + dm1_tc2[2]+dm1_tc2[2].T
+                print('tc2',numpy.linalg.norm(dm1_mcw-dm1_tc2),numpy.linalg.norm(test.reshape(-1, test.shape[-1])))
+                test =  dm1_hpcp[0]+dm1_hpcp[0].T + dm1_hpcp[1]+dm1_hpcp[1].T + dm1_hpcp[2]+dm1_hpcp[2].T
+                print('hpcp',numpy.linalg.norm(dm1_mcw-dm1_hpcp),numpy.linalg.norm(test.reshape(-1, test.shape[-1])))
+                test =  dm1_mcw[0]+dm1_mcw[0].T + dm1_mcw[1]+dm1_mcw[1].T + dm1_mcw[2]+dm1_mcw[2].T
+                print('mcw',numpy.linalg.norm(dm1_mcw-dm1_mcw),numpy.linalg.norm(test.reshape(-1, test.shape[-1])))
+                msc_para = self.para_dm(method = 'hpcp', dm10=dm1)
+                plt.figure(0)
+                plt.matshow(dm1_slv[0])
+                plt.colorbar()
+                plt.figure(1)
+                plt.matshow(dm1_slv[0] - dm1_mcw[0])
+                plt.colorbar()
+
         else:
             if mo1 is None:
                 self.mo10, self.mo_e10 = self.solve_mo1()
@@ -921,7 +957,7 @@ if __name__ == '__main__':
     from pyscf import gto
     from pyscf import scf
     mol = gto.Mole()
-    mol.verbose = 0
+    mol.verbose = 3
     mol.output = None
 
     #LAT: Add tests for your implementation (syl, tc2, hpcp, mcw)
@@ -929,7 +965,7 @@ if __name__ == '__main__':
     mol.atom.extend([
         [1   , (0. , 0. , .917)],
         ['F' , (0. , 0. , 0.)], ])
-    mol.nucmod = {'F': 2} # gaussian nuclear model
+    #mol.nucmod = {'F': 2} # gaussian nuclear model
     mol.basis = {'H': '6-31g',
                  'F': '6-31g',}
     mol.build()
@@ -980,35 +1016,68 @@ if __name__ == '__main__':
     print(lib.finger(msc) - -108.48528212325664)
 
     #LAT: own tests to delete when problem solve
-    filepath='/Users/lioneltruflandier/Publications/Interior/draft/bench_mol/sf6_calc/'
-    filename='sf6_opt.xyz'
-    mol = gto.M(atom=filepath+filename,basis='sto-3g')
-    mol.charge = 0
-    mol.symmetry = True
+    #filepath='/Users/lioneltruflandier/Publications/Interior/draft/bench_mol/sf6_calc/'
+    #filename='sf6_opt.xyz'
+    #mol = gto.M(atom=filepath+filename,basis='sto-3g')
+    #mol.charge = 0
+    #mol.symmetry = True
     #mol = gto.Mole()
     #mol.verbose = 0
     #mol.output = None
-    #mol.atom.extend([
-    #    [1   , (0. , 0. , .917)],
-    #    ['F' , (0. , 0. , 0.)], ])
-    #mol.nucmod = {'F': 2} # gaussian nuclear model
-    #mol.basis = {'H': 'sto-3g',
-    #             'F': 'sto-3g',}
+    #mol = gto.M(
+    #atom = '''C 0 0 0; O 0 0 1''')
+#    mol.basis = {'F': '''
+#F    S
+#      0.1666791340E+03       0.1543289673E+00
+#      0.3036081233E+02       0.5353281423E+00
+#      0.8216820672E+01       0.4446345422E+00
+#F    SP
+#      0.6464803249E+02      -0.9996722919E-01       0.1559162750E+00
+#      0.1502281245E+02       0.3995128261E+00       0.6076837186E+00
+#      0.4885884864E+10       0.7001154689E+00       0.3919573931E+00
+#    '''}
+#    #mol.basis = {'F': '''
+    #F    S
+    #  0.1666791340E+03       0.1543289673E+00
+    #  0.3036081233E+02       0.5353281423E+00
+    #  0.8216820672E+01       0.4446345422E+00
+    #F    SP
+    #  0.6464803249E+01      -0.9996722919E-01       0.1559162750E+00
+    #  0.1502281245E+01       0.3995128261E+00       0.6076837186E+00
+    #  0.4885884864E+00       0.7001154689E+00       0.3919573931E+00
+    #'''}    
+    #atom = '''C 0 0 0; O 0 0 1''',
+    #basis = '6-31G' )
+    mol = gto.M(atom=[
+    ['C', 0.000000,  0.000000,  0.659704],
+    ['C', 0.000000,  0.000000, -0.659704],
+    ['H', 0.000000,  0.921399,  1.228194],
+    ['H', 0.000000, -0.921399,  1.228194],
+    ['H', 0.000000, -0.921399, -1.228194],
+    ['H', 0.000000,  0.921399, -1.228194]],
+basis = 'sto-3g')
+#basis = 'sto-3g')   
+    
+    
     mol.build()
-
-    rhf = scf.RHF(mol).run(conv_thr=1e-16)
+    mol.verbose = 10
+    rhf = scf.RHF(mol).run(conv_thr=1e-12)
     nmr = rhf.NMR()
 
     nmr.cphf = False
     nmr.gauge_orig = None
     msc_original = nmr.shielding()    
+    
+   #LAT: Add tests for your implementation (syl, tc2, hpcp, mcw)    
     msc_hpcp = nmr.shielding(method='hpcp')
     msc_tc2 = nmr.shielding(method='tc2')
     msc_syl = nmr.shielding(method='slv')    
     msc_mcw = nmr.shielding(method='mcw')
+    print('######## test:')
     print(lib.finger(msc_original))    
     print(lib.finger(msc_hpcp) - lib.finger(msc_original))
     print(lib.finger(msc_tc2)  - lib.finger(msc_original))
     print(lib.finger(msc_syl)  - lib.finger(msc_original))    
     print(lib.finger(msc_mcw)  - lib.finger(msc_original))
-
+    
+    msc_hpcp = nmr.shielding(method='all')
