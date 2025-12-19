@@ -41,6 +41,7 @@ from sksparse.cholmod import cholesky
 from pyscf.prop.nmr.utils import inv, diis, build_ab, build_q, gershgorin_max, gershgorin_min
 from pyscf.prop.nmr.huckel import get_system, dummy_F1_S1, overlap
 import time
+import matplotlib.pyplot as plt
 
 def dia(nmrobj, gauge_orig=None, shielding_nuc=None, dm0=None):
     '''Diamagnetic part of NMR shielding tensors.
@@ -280,7 +281,7 @@ def solve_mo1(nmrobj, mo_energy=None, mo_coeff=None, mo_occ=None,
     
     return mo10, mo_e10
 
-def _solve_dm10_uncoupled(mo_coeff, mo_occ, mo_energy, h1, s1):
+def _solve_dm10_uncoupled(mo_coeff, mo_occ, mo_energy, h1, s1, D0):
    
     occidx = mo_occ > 0
     viridx = mo_occ == 0
@@ -288,7 +289,7 @@ def _solve_dm10_uncoupled(mo_coeff, mo_occ, mo_energy, h1, s1):
     eo, ev = mo_energy[occidx], mo_energy[viridx]
     Co, Cv = mo_coeff[:, occidx], mo_coeff[:, viridx]
     cart, M = s1.shape[0], s1.shape[1]
-    D0 = Co @ Co.conj().T
+    #D0 = Co @ Co.conj().T
     Doo = -.5* (D0 @ s1) @ D0
     Dov = numpy.zeros((cart, M, M))
     
@@ -314,20 +315,30 @@ def solve_dm10_mcweeny(nmrobj, mo_coeff=None, mo_occ=None, mo_energy=None,
      
     t0 = time.perf_counter()
      
-    if mo_coeff is None: mo_coeff = nmrobj._scf.mo_coeff
-    if mo_occ is None: mo_occ = nmrobj._scf.mo_occ
-    if mo_energy is None: mo_energy = nmrobj._scf.mo_energy
-    if with_cphf is None: with_cphf = nmrobj.cphf
-    dm0 = nmrobj._scf.make_rdm1(mo_coeff, mo_occ)
-    mol = nmrobj.mol
-    if h1 is None:
-        h1 = make_h10(mol, dm0, gauge_orig=nmrobj.gauge_orig)
-    if s1 is None:
-        s1 = make_s10(mol, gauge_orig=nmrobj.gauge_orig)
-
+    # if mo_coeff is None: mo_coeff = nmrobj._scf.mo_coeff
+    # if mo_occ is None: mo_occ = nmrobj._scf.mo_occ
+    # if mo_energy is None: mo_energy = nmrobj._scf.mo_energy
+    # if with_cphf is None: with_cphf = nmrobj.cphf
+    # dm0 = nmrobj._scf.make_rdm1(mo_coeff, mo_occ)
+    # mol = nmrobj.mol
+    # if h1 is None:
+    #     h1 = make_h10(mol, dm0, gauge_orig=nmrobj.gauge_orig)
+    # if s1 is None:
+    #     s1 = make_s10(mol, gauge_orig=nmrobj.gauge_orig)
+    
+    F0, S0, D0, N = get_system(1000, 1000)
+    h1, s1 = dummy_F1_S1(F0)
+    #Sinv = numpy.linalg.inv(S0)
+    mo_energy, mo_coeff = np.linalg.eigh(F0)
+    nocc = N
+    nvir = 1000 - N
+    #mo_occ = np.array([2,2,2,2,2,0,0,0,0,0])
+    mo_occ = np.zeros(1000)
+    mo_occ[:nocc] = 2.0
+    
     if not with_cphf:
         D1, Doo, Dov, Dvo = _solve_dm10_uncoupled(mo_coeff, mo_occ,
-                                                  mo_energy, h1, s1)
+                                                  mo_energy, h1, s1, D0)
         t1 = time.perf_counter()
         total_time = t1 - t0
         print(f"time spent in DM routine: {total_time}")
@@ -340,10 +351,10 @@ def solve_dm10_mcweeny(nmrobj, mo_coeff=None, mo_occ=None, mo_energy=None,
         eo, ev = mo_energy[occidx], mo_energy[viridx]
         Co, Cv = mo_coeff[:, occidx], mo_coeff[:, viridx]
         cart, M = s1.shape[0], s1.shape[1]
-        D0 = .5*dm0
-        S0 = mol.intor('int1e_ovlp')
-        F0 = nmrobj._scf.get_fock()
-        Doo = -.5* (D0 @ s1) @ D0
+        #D0 = .5*dm0
+        #S0 = mol.intor('int1e_ovlp')
+        #F0 = nmrobj._scf.get_fock()
+        Doo = -.5 * (D0 @ s1) @ D0
         
         vresp = nmrobj._scf.gen_response(singlet=True, hermi=2)
         
@@ -477,24 +488,24 @@ def solve_dm10_sylvester(nmrobj, mo_coeff=None, mo_occ=None,
     #if s1 is None: s1 = make_s10(mol, gauge_orig=nmrobj.gauge_orig) # numpy.eye((h1.shape[1])) 
     if with_cphf is None: with_cphf = nmrobj.cphf
         
-    F0, S0, D0, N = get_system(10, 10)
-    #S0 = overlap(10)
-    h1, s1 = dummy_F1_S1(F0)
+    F0, S0, D0, N = get_system(1000, 1000)
     Sinv = numpy.linalg.inv(S0)
-    # S0 = mol.intor('int1e_ovlp') # numpy.eye((h1.shape[1]))
+    #print("before h1")
+    h1, s1 = dummy_F1_S1(F0)
+    #print("after h1")
+    # S0 = mol.intor('int1e_ovlp')
     # Sinv = numpy.linalg.inv(S0) #inv(S0) 
-    # h1e = mol.intor("int1e_kin") + mol.intor("int1e_nuc")
-    # vhf = hf.get_veff(mol, dm0)
-    # F0 = h1e + vhf
     #F0 = nmrobj._scf.get_fock(dm=dm0)
     # D0 = .5 * dm0
     ######### property check ##############
+    #plt.figure(10)
+    #plt.matshow(h1[0])
     print("Cond number of S:", numpy.linalg.cond(S0))
 
     idem = D0 @ S0 @ D0 - D0
     print("this is idempotent if it's True:", numpy.allclose(idem, numpy.zeros(idem.shape)))
     trace = numpy.trace(D0 @ S0)
-    N = mol.nelectron
+    #N = mol.nelectron
     print("this is a correct trace if it's True:", numpy.allclose(trace, N/2), "trace:", trace, "number of occ:", N/2)
     if not with_cphf:
         D1 = solve_dm10_linear(S0, Sinv, F0, D0, s1, h1)
@@ -655,7 +666,7 @@ def purification_first_order(nmrobj, method='tc2', max_cycle=2000, tol=1e-8, wit
     #vhf = hf.get_veff(mol, dm0)
     #F0 = h1e + vhf
     #S0 =  mol.intor("int1e_ovlp") # numpy.eye((S1.shape[1]))
-    F0, S0, D0, N = get_system(10, 10)
+    F0, S0, D0, N = get_system(1000, 1000)
     #S0 = overlap(10)
     F1, S1 = dummy_F1_S1(F0)
     Sinv = numpy.linalg.inv(S0)
@@ -1075,7 +1086,7 @@ if __name__ == '__main__':
     from pyscf import gto
     from pyscf import scf
     mol = gto.Mole()
-    mol.verbose = 0
+    mol.verbose = 1
     mol.output = None
 
     mol.atom.extend([
@@ -1169,11 +1180,11 @@ nmr = NMR(mf)
 nmr.cphf = False
 nmr.gauge_orig = None
 
+D1_syl = solve_dm10_sylvester(nmr)
+D1_mcw, _, _, _ = solve_dm10_mcweeny(nmr)
+
 _, D1_tc2 = purification_first_order(nmr, method='tc2')
 _, D1_hpcp = purification_first_order(nmr, method='hpcp')
-
-D1_syl = solve_dm10_sylvester(nmr)
-#D1_mcw, _, _, _ = solve_dm10_mcweeny(nmr)
 
 print('Norm of the density matrix D1_hpcp:', np.linalg.norm(D1_hpcp))
 print('Norm of the density matrix D1_tc2:', np.linalg.norm(D1_tc2))
@@ -1183,9 +1194,19 @@ test_D1 = D1_tc2 - D1_hpcp
 print('Comparing D1_tc2 with D1_hpcp:', np.linalg.norm(test_D1.reshape(-1, test_D1.shape[-1]), ord='fro'))
 test_D1 = D1_hpcp - D1_syl
 print('Comparing D1_hpcp with D1_syl:', np.linalg.norm(test_D1.reshape(-1, test_D1.shape[-1]), ord='fro'))
-# test_D1 = D1_syl - D1_mcw
-# print('Comparing D1_syl with D1_mcw:', np.linalg.norm(test_D1.reshape(-1, test_D1.shape[-1]), ord='fro'))
+test_D1 = D1_syl - D1_mcw
+print('Comparing D1_syl with D1_mcw:', np.linalg.norm(test_D1.reshape(-1, test_D1.shape[-1]), ord='fro'))
 
+# import matplotlib.pyplot as plt 
+
+# plt.figure(0)
+# plt.matshow(D1_mcw[0])
+
+# plt.figure(1)
+# plt.matshow(D1_syl[0])
+
+# plt.figure(2)
+# plt.matshow(D1_hpcp[0])
 
 # msc_para = para_dm(nmr, method='tc2')
 # msc_para_m10, _, _ = para(nmr)

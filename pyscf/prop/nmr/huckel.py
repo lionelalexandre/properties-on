@@ -7,6 +7,7 @@ Created on Wed Dec 10 16:34:21 2025
 """
 
 import numpy as np
+import matplotlib.pyplot as plt
 
 def build_huckel(n, alpha=5.0, beta=-1.0):
     H = np.zeros((n,n))
@@ -38,6 +39,7 @@ def get_system(n_orb, n_elec, alpha=5.0, beta=-1.0):
 
 
 def dummy_F1_S1(F0, scale=1e-3, seed=1):
+    #print("F1 S1")
     rng = np.random.default_rng(seed)
     M = F0.shape[0]
     s = scale * np.linalg.norm(F0, ord='fro') / np.sqrt(M) # to keep perturbation small 
@@ -45,10 +47,15 @@ def dummy_F1_S1(F0, scale=1e-3, seed=1):
     F1 = np.empty((3, M, M))
     for k in range(3):
         A = rng.standard_normal((M, M))
-        F1[k] = 0.5 * (A + A.T)
+        F1[k] = 0.5 * (A - A.T)
         F1[k] *= s / np.linalg.norm(F1[k], ord='fro')
-        
+    # F1[0] = np.eye((M))
+    # F1[1] = np.eye((M))
+    # F1[2] = np.eye((M))
     S1 = np.zeros_like(F1)
+    #plt.figure(0)
+    #plt.matshow(F1[0])
+    #print("F1 S1 ....")
     return F1, S1
 
 
@@ -64,3 +71,9 @@ def overlap(M, kappa=1e8, seed=1):
 F0, S0, D0, N = get_system(10, 10)
 F1, S1 = dummy_F1_S1(F0)
 S0 = overlap(10)
+
+
+plt.figure(1)
+plt.matshow(F1[1])
+plt.figure(2)
+plt.matshow(D0)
