@@ -158,6 +158,34 @@ class TestNMRShielding(unittest.TestCase):
         nmr.gauge_orig = (1,1,1)
         msc = nmr.shielding(method='slv')
         self.assertAlmostEqual(finger(msc), 1562.3859191742165, 4)
+        
+    def test_tc2_method_cphf(self):
+        nmr =  NMR(mf)
+        nmr.cphf = True
+        nmr.gauge_orig = None
+        msc = nmr.shielding(method='tc2')
+        self.assertAlmostEqual(finger(msc), 1358.9826179886654, 4)
+        
+    def test_tc2_method_common_gauge_cphf(self):
+        nmr =  NMR(mf)
+        nmr.cphf = True
+        nmr.gauge_orig = (1,1,1)
+        msc = nmr.shielding(method='tc2')
+        self.assertAlmostEqual(finger(msc), 1562.3859191742165, 4)
+        
+    def test_hpcp_method_cphf(self):
+        nmr =  NMR(mf)
+        nmr.cphf = True
+        nmr.gauge_orig = None
+        msc = nmr.shielding(method='hpcp')
+        self.assertAlmostEqual(finger(msc), 1358.9826179886654, 4)
+        
+    def test_hpcp_method_common_gauge_cphf(self):
+        nmr =  NMR(mf)
+        nmr.cphf = True
+        nmr.gauge_orig = (1,1,1)
+        msc = nmr.shielding(method='hpcp')
+        self.assertAlmostEqual(finger(msc), 1562.3859191742165, 4)
 
 if __name__ == "__main__":
     print("Running RHF-DM NMR shielding tests...")
