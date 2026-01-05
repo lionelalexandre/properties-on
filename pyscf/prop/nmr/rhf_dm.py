@@ -922,6 +922,16 @@ if __name__ == '__main__':
     print(msc[1][0,0], 283.514599)
     print(msc[1][1,1], 292.578151)
     print(msc[1][2,2], 257.348176)
-    print(lib.finger(msc) - -123.98600632099961)
+    print(lib.finger(msc) - -123.98600632099961)  
     
-
+    msc_hpcp = nmr.shielding(method='hpcp')
+    msc_tc2 = nmr.shielding(method='tc2')
+    msc_syl = nmr.shielding(method='slv')    
+    msc_mcw = nmr.shielding(method='mcw')
+    
+    print('######## test:')
+    print(lib.finger(msc))    
+    print(lib.finger(msc_hpcp) - lib.finger(msc))
+    print(lib.finger(msc_tc2)  - lib.finger(msc))
+    print(lib.finger(msc_syl)  - lib.finger(msc))    
+    print(lib.finger(msc_mcw)  - lib.finger(msc))
